@@ -25,6 +25,21 @@ const BEAUTY_QUERIES = [
   "site:instagram.com 江南 美容 日本人 Instagram",
   "site:instagram.com 明洞 美容 日本人 Instagram",
   "site:instagram.com 韓国美容 旅行 日本語 Instagram",
+  "site:instagram.com 韓国旅行 美容 VLOG 日本人 Instagram",
+  "site:instagram.com 韓国ひとり旅 美容 コスメ 日本人 Instagram",
+  "site:instagram.com オリーブヤング 購入品 日本人 Instagram",
+  "site:instagram.com 韓国コスメ 購入品 日本人 Instagram",
+  "site:instagram.com 韓国薬局 美容 日本人 Instagram",
+  "site:instagram.com 韓国スキンケア レビュー 日本人 Instagram",
+  "site:instagram.com 韓国在住 日本人 ライフスタイル 美容 Instagram",
+  "site:instagram.com ソウル旅行 コスメ 日本人 Instagram",
+  "site:instagram.com 釜山旅行 美容 日本人 Instagram",
+  "site:instagram.com 韓国ショッピング コスメ 日本人 Instagram",
+  "site:instagram.com 韓国美容 ブロガー 日本人 Instagram",
+  "site:instagram.com 韓国美容 会社員 日本人 Instagram",
+  "site:instagram.com 韓国コスメ ママ 日本人 Instagram",
+  "site:instagram.com 韓国美容 40代 日本人 Instagram",
+  "site:instagram.com 韓国美容 50代 日本人 Instagram",
 ];
 
 const FOOD_QUERIES = [
@@ -63,6 +78,8 @@ const BEAUTY_EXPANSIONS = [
   "韓国在住",
   "ソウル 釜山",
   "コスメ 美容医療",
+  "購入品 スキンケア",
+  "薬局 オリーブヤング",
 ];
 
 const FOOD_EXPANSIONS = [
