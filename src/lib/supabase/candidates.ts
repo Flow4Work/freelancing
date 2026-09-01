@@ -29,8 +29,9 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
     source_provider: candidate.sourceProvider,
     evidence_url: candidate.evidenceUrl,
     evidence_text: candidate.evidenceText,
-    flags: candidate.flags,
+    flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)],
     verification_status: candidate.verificationStatus,
+    discovery_status: candidate.candidateStatus,
     first_seen_at: candidate.discoveredAt,
     last_seen_at: candidate.discoveredAt,
   }));
