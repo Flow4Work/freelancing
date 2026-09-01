@@ -1,4 +1,4 @@
-import type { DiscoveryCandidate, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import type { DiscoveryCandidate, DuplicateCheckStatus, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
 import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
@@ -110,7 +110,7 @@ export async function listCandidates(category: SearchCategory) {
 
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
+    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
     .eq("category", category)
     .in("discovery_status", VISIBLE_STATUSES)
     .order("first_seen_at", { ascending: false })
@@ -160,6 +160,9 @@ export async function listCandidates(category: SearchCategory) {
       koreaSignals,
       rejectReasons: [],
       flags,
+      duplicateCheckStatus: normalizeDuplicateCheckStatus(row.duplicate_check_status),
+      duplicateCheckMessage: nullableString(row.duplicate_check_message),
+      duplicateCheckedAt: nullableString(row.duplicate_checked_at),
       bio: nullableString(row.bio),
       followers: numberOrNull(row.followers),
       reelAverage: numberOrNull(row.reel_average),
@@ -261,6 +264,11 @@ function normalizeProvider(value: unknown): SearchProviderName {
 function normalizeVerificationStatus(value: unknown): VerificationStatus {
   const allowed: VerificationStatus[] = ["needs_instagram", "verified", "insufficient", "private", "rejected", "hard_reject"];
   return allowed.includes(value as VerificationStatus) ? value as VerificationStatus : "needs_instagram";
+}
+
+function normalizeDuplicateCheckStatus(value: unknown): DuplicateCheckStatus {
+  const allowed: DuplicateCheckStatus[] = ["not_checked", "available", "duplicate", "protected", "unknown"];
+  return allowed.includes(value as DuplicateCheckStatus) ? value as DuplicateCheckStatus : "not_checked";
 }
 
 function normalizeReelMetricsStatus(value: unknown): ReelMetricsStatus {
