@@ -35,21 +35,17 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
   const invokedPath = path.join(root, `${input.jobId}.invoked`);
   const failedPath = path.join(root, `${input.jobId}.failed`);
-  const completedPath = path.join(root, `${input.jobId}.completed`);
 
   await Promise.all([
     rm(invokedPath, { force: true }),
     rm(failedPath, { force: true }),
-    rm(completedPath, { force: true }),
   ]);
 
   const duplicatePriorityInstruction = input.title === "중복 확인"
-    ? `\n\n[최우선 실행 규칙]\n- 후보는 주어진 순서대로 정확히 한 번씩만 검사한다. 이미 검사한 후보를 다시 검사하지 않는다.\n- 목록에 없는 테스트 계정을 입력하지 않는다.\n- 결과 형식을 알아보기 위한 추가 실험, iframe/DOM 구조 연구, 디버깅, playwright_b_browser_run_code_unsafe 사용을 금지한다.\n- 로그인 후 입력칸과 중복 확인 버튼을 찾으면 같은 폼을 계속 사용한다. 실제 동작 실패가 없는 한 다시 탐색하지 않는다.\n- 각 후보는 입력칸 비우기 → ID 입력 → 중복 확인 클릭 → 화면 결과 판정만 수행한다.\n- 마지막 후보 판정 직후 즉시 전체 결과를 localhost:3000/api/duplicate/results 로 POST한다.\n- POST 응답의 ok:true를 확인한 뒤에는 브라우저 검색/검사/재확인을 단 한 번도 더 하지 않고 바로 완료 신호를 만든다.\n- 후보 하나라도 판정할 수 없으면 추가 연구하지 말고 즉시 실패 종료한다.`
+    ? `\n\n[최우선]\n- 후보는 순서대로 정확히 1회만 검사한다.\n- 중간 보고, 재검사, 테스트 계정, 추가 연구, run_code_unsafe, Temp 파일 생성을 하지 않는다.\n- 마지막 후보 직후 Invoke-RestMethod 직접 POST로 localhost:3000/api/duplicate/results 에 제출한다.\n- POST ok:true 확인 후 추가 작업 없이 종료한다.`
     : "";
 
-  const completionInstruction = `\n\n마지막 성공 신호:\n- localhost 결과 제출 응답의 \"ok\":true를 실제 확인한 뒤에만 아래 PowerShell 명령을 정확히 한 번 실행한다.\n- 제출 실패, 로그인 실패, 검증 실패, 중간 종료 상태에서는 이 파일을 절대 만들지 않는다.\nSet-Content -LiteralPath ${psQuote(completedPath)} -Value ok -Encoding ASCII\n- 이 완료 신호까지 만든 뒤에만 OpenCode 작업을 정상 종료한다.`;
-
-  await writeFile(promptPath, `${input.prompt}${duplicatePriorityInstruction}${completionInstruction}`, { encoding: "utf8" });
+  await writeFile(promptPath, `${input.prompt}${duplicatePriorityInstruction}`, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -62,7 +58,6 @@ $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
-$CompletedFile = ${psQuote(completedPath)}
 
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
@@ -74,31 +69,21 @@ try {
   }
 
   Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 생성된 작업 지시 파일을 opencode run에 전달합니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] 작업 지시를 opencode run에 전달합니다." -ForegroundColor DarkGray
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시를 그대로 실행하고 localhost 결과 제출까지 완료해." --file $PromptFile
+  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
   if ($Code -ne 0) {
     throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
   }
 
-  if (-not (Test-Path -LiteralPath $CompletedFile)) {
-    throw "OpenCode가 종료됐지만 localhost 결과 제출 완료 신호가 없습니다. 로그인/페이지 접근/결과 POST가 끝나지 않은 상태입니다."
-  }
-
-  $CompletionValue = (Get-Content -LiteralPath $CompletedFile -Raw).Trim()
-  if ($CompletionValue -ne "ok") {
-    throw "localhost 결과 제출 완료 신호가 올바르지 않습니다."
-  }
-
   Write-Host ""
-  Write-Host "[FixUp Scout] 완료. localhost 결과 제출 확인됨." -ForegroundColor Green
+  Write-Host "[FixUp Scout] OpenCode 실행 종료. 제출 결과는 위 로그와 Scout 화면에서 확인하세요." -ForegroundColor Green
   Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $CompletedFile -ErrorAction SilentlyContinue
   Read-Host "창을 닫으려면 Enter"
   exit 0
 }
