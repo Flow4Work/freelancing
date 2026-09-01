@@ -22,6 +22,25 @@ type AutomationRunResponse = {
   error?: string;
 };
 
+type AutomationHistoryItem = {
+  id: string;
+  mode: AutomationMode;
+  status: "pending" | "completed";
+  candidateCount: number;
+  createdAt: string;
+  completedAt: string | null;
+  destination: string;
+  destinationCount: number;
+  excludedCount: number;
+  unresolvedCount: number;
+};
+
+type AutomationHistoryResponse = {
+  ok: boolean;
+  items?: AutomationHistoryItem[];
+  error?: string;
+};
+
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
@@ -39,7 +58,6 @@ export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
   const [targetCount, setTargetCount] = useState(50);
   const [health, setHealth] = useState<Health | null>(null);
-  const [result, setResult] = useState<DiscoveryResponse | null>(null);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(false);
@@ -49,6 +67,9 @@ export function DiscoveryConsole() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [automationWatchUntil, setAutomationWatchUntil] = useState<number | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyItems, setHistoryItems] = useState<AutomationHistoryItem[]>([]);
 
   useEffect(() => {
     fetch("/api/health")
@@ -60,8 +81,9 @@ export function DiscoveryConsole() {
   useEffect(() => {
     let cancelled = false;
     setListLoading(true);
-    setResult(null);
     setStatusFilter("all");
+    setHistoryOpen(false);
+    setHistoryItems([]);
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -91,12 +113,13 @@ export function DiscoveryConsole() {
       }
       try {
         await reloadCandidates(category);
+        if (historyOpen) await loadHistory();
       } catch {
         // 다음 주기에 다시 시도한다.
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [automationWatchUntil, category]);
+  }, [automationWatchUntil, category, historyOpen]);
 
   useEffect(() => {
     if (!loading) return;
@@ -151,6 +174,29 @@ export function DiscoveryConsole() {
     setCandidates(payload.candidates);
   }
 
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(`/api/automation/run?category=${category}`, { cache: "no-store" });
+      const payload = await response.json() as AutomationHistoryResponse;
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "기록 조회 실패");
+      setHistoryItems(payload.items ?? []);
+    } catch (caught) {
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "기록 조회 실패" });
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function toggleHistory() {
+    if (historyOpen) {
+      setHistoryOpen(false);
+      return;
+    }
+    setHistoryOpen(true);
+    await loadHistory();
+  }
+
   async function runDiscovery() {
     setLoading(true);
     setError(null);
@@ -163,7 +209,6 @@ export function DiscoveryConsole() {
       });
       const payload = await response.json() as DiscoveryResponse & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "검색에 실패했습니다.");
-      setResult(payload);
       await reloadCandidates(category);
       setToast({ kind: "success", message: `${payload.runNo}차 검색 · ${payload.candidates.length}명 신규/근거 보강` });
     } catch (caught) {
@@ -194,9 +239,10 @@ export function DiscoveryConsole() {
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "OpenCode 자동 실행 실패");
 
       setAutomationWatchUntil(Date.now() + 10 * 60 * 1000);
+      setHistoryOpen(false);
       setToast({
         kind: "success",
-        message: `PowerShell + OpenCode 실행 · ${payload.candidateCount ?? handles.length}명`,
+        message: `${mode === "duplicate" ? "중복 확인" : "최종 검증"} 시작 · ${payload.candidateCount ?? handles.length}명`,
       });
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "OpenCode 자동 실행 실패" });
@@ -217,7 +263,24 @@ export function DiscoveryConsole() {
             <label htmlFor="target">이번 추가 목표</label>
             <input id="target" type="number" min={10} max={300} value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} />
           </div>
-          <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
+          <div className="control-actions">
+            <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
+            <div className="history-control">
+              <button className="history-button" onClick={toggleHistory}>기록</button>
+              {historyOpen && (
+                <div className="history-popover">
+                  <strong>최근 처리 기록</strong>
+                  {historyLoading ? (
+                    <div className="history-empty">불러오는 중…</div>
+                  ) : historyItems.length ? (
+                    historyItems.map((item) => <div className="history-item" key={item.id}>{historyLabel(item)}</div>)
+                  ) : (
+                    <div className="history-empty">아직 실행 기록이 없습니다.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {loading && (
@@ -235,7 +298,7 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}${result ? ` · 이번 ${result.candidates.length}` : ""}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
@@ -319,6 +382,20 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
   if (candidate.candidateStatus === "search_qualified") return { label: "추천 후보", tone: "recommended" };
   if (candidate.candidateStatus === "needs_review") return { label: "검증 필요", tone: "review" };
   return null;
+}
+
+function historyLabel(item: AutomationHistoryItem) {
+  const time = new Intl.DateTimeFormat("ko-KR", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(item.completedAt ?? item.createdAt));
+  const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
+  if (item.status === "pending") return `${time} · ${action} ${item.candidateCount}명 · 진행 중`;
+  const excluded = item.excludedCount ? ` · 제외 ${item.excludedCount}` : "";
+  const unresolved = item.unresolvedCount ? ` · 미반영 ${item.unresolvedCount}` : "";
+  return `${time} · ${action} ${item.candidateCount}명 → ${item.destination} ${item.destinationCount}${excluded}${unresolved}`;
 }
 
 function stateLabel(state: CandidateViewState) {
