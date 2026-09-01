@@ -4,8 +4,9 @@ import { assertLocalRequest, assertOpenCodeAvailable, launchOpenCodeJob } from "
 import { buildDuplicateCheckPrompt } from "@/lib/discovery/duplicate-prompt";
 import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
+import type { DiscoveryCandidate } from "@/lib/discovery/types";
 import { getAutomationCandidates, listCandidates } from "@/lib/supabase/candidates";
-import { createVerificationJob, listRecentVerificationJobs } from "@/lib/supabase/verification-jobs";
+import { createVerificationJob, listRecentVerificationJobs, type VerificationJobDestination, type VerificationJobResultGroup } from "@/lib/supabase/verification-jobs";
 
 export const runtime = "nodejs";
 
@@ -21,24 +22,18 @@ export async function GET(request: Request) {
     assertLocalRequest(request);
     const category = categorySchema.parse(new URL(request.url).searchParams.get("category"));
     const [jobs, candidates] = await Promise.all([
-      listRecentVerificationJobs(category, 5),
+      listRecentVerificationJobs(category, 8),
       listCandidates(category),
     ]);
     const candidateMap = new Map(candidates.map((candidate) => [candidate.handle, candidate]));
 
     const items = jobs.map((job) => {
-      const rows = job.handles.map((handle) => candidateMap.get(handle)).filter(Boolean);
-      const destination = job.jobKind === "duplicate" ? "중복 통과" : "최종 검증 완료";
-      const destinationCount = job.jobKind === "duplicate"
-        ? rows.filter((candidate) => candidate?.duplicateCheckStatus === "available").length
-        : rows.filter((candidate) => candidate && getCandidateViewState(candidate) === "final_verification").length;
-      const excludedCount = job.jobKind === "duplicate"
-        ? rows.filter((candidate) => candidate?.duplicateCheckStatus === "duplicate" || candidate?.duplicateCheckStatus === "protected").length
-        : rows.filter((candidate) => {
-          if (!candidate) return false;
-          if (candidate.verificationStatus === "private" || candidate.verificationStatus === "rejected" || candidate.verificationStatus === "hard_reject") return true;
-          return candidate.verificationStatus === "verified" && getCandidateViewState(candidate) !== "final_verification";
-        }).length;
+      const groups = job.resultSummary?.groups
+        ?? (job.status === "completed" ? buildLegacyGroups(job.handles, candidateMap) : []);
+      const excludedCount = groupCount(groups, "제외");
+      const unresolvedCount = groupCount(groups, "미반영");
+      const destinationGroups = groups.filter((group) => group.destination !== "제외" && group.destination !== "미반영");
+      const mainDestination = [...destinationGroups].sort((a, b) => b.handles.length - a.handles.length)[0];
 
       return {
         id: job.id,
@@ -47,10 +42,12 @@ export async function GET(request: Request) {
         candidateCount: job.handles.length,
         createdAt: job.createdAt,
         completedAt: job.completedAt,
-        destination,
-        destinationCount,
+        destination: mainDestination?.destination ?? (job.jobKind === "duplicate" ? "중복 통과" : "최종 검증 완료"),
+        destinationCount: mainDestination?.handles.length ?? 0,
         excludedCount,
-        unresolvedCount: Math.max(0, job.handles.length - destinationCount - excludedCount),
+        unresolvedCount,
+        groups,
+        exactSnapshot: Boolean(job.resultSummary),
       };
     });
 
@@ -99,4 +96,44 @@ export async function POST(request: Request) {
     console.error("automation_run_failed", error);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
+}
+
+function buildLegacyGroups(handles: string[], candidateMap: Map<string, DiscoveryCandidate>): VerificationJobResultGroup[] {
+  const groups = new Map<VerificationJobDestination, VerificationJobResultGroup>();
+
+  function add(destination: VerificationJobDestination, handle: string, reason?: string) {
+    const group = groups.get(destination) ?? { destination, handles: [], reasons: [] };
+    group.handles.push(handle);
+    if (reason) group.reasons.push({ handle, reason });
+    groups.set(destination, group);
+  }
+
+  for (const handle of handles) {
+    const candidate = candidateMap.get(handle);
+    if (!candidate) {
+      add("미반영", handle, "현재 후보 목록에서 찾지 못함");
+      continue;
+    }
+
+    const state = getCandidateViewState(candidate);
+    if (state === "verification_needed") add("검증 필요", handle);
+    else if (state === "recommended") add("추천 후보", handle);
+    else if (state === "duplicate_passed") add("중복 통과", handle);
+    else if (state === "final_verification") add("최종 검증 완료", handle);
+    else if (state === "dm_ready") add("DM 준비", handle);
+    else add("제외", handle, legacyExclusionReason(candidate));
+  }
+
+  return [...groups.values()];
+}
+
+function legacyExclusionReason(candidate: DiscoveryCandidate) {
+  if (candidate.duplicateCheckStatus === "duplicate") return "FixUp 중복";
+  if (candidate.duplicateCheckStatus === "protected") return "보호 목록";
+  if (candidate.verificationStatus === "private") return "비공개 계정";
+  return candidate.verificationNote ?? "후보 제외";
+}
+
+function groupCount(groups: VerificationJobResultGroup[], destination: VerificationJobDestination) {
+  return groups.find((group) => group.destination === destination)?.handles.length ?? 0;
 }
