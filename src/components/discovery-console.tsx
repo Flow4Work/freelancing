@@ -124,14 +124,16 @@ export function DiscoveryConsole() {
     return candidates.filter((candidate) => getCandidateViewState(candidate) === statusFilter);
   }, [candidates, statusFilter]);
 
-  const qualifiedTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "qualified").length;
-  const priorityTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "priority").length;
-  const reviewTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "review").length;
+  const verificationNeededTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "verification_needed").length;
+  const recommendedTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "recommended").length;
+  const duplicatePassedTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "duplicate_passed").length;
+  const finalVerificationTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "final_verification").length;
+  const dmReadyTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "dm_ready").length;
 
-  const action = statusFilter === "qualified"
+  const action = statusFilter === "verification_needed" || statusFilter === "recommended"
     ? { mode: "duplicate" as const, label: "중복 확인 실행" }
-    : statusFilter === "priority"
-      ? { mode: "instagram" as const, label: "원본 검증 실행" }
+    : statusFilter === "duplicate_passed"
+      ? { mode: "instagram" as const, label: "최종 검증 실행" }
       : null;
 
   async function reloadCandidates(targetCategory: SearchCategory) {
@@ -249,14 +251,16 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검증 우선 ${priorityTotal} · 검토 ${reviewTotal}${result ? ` · 이번 ${result.candidates.length}` : ""}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}${result ? ` · 이번 ${result.candidates.length}` : ""}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
               <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>전체</button>
-              <button className={statusFilter === "qualified" ? "active" : ""} onClick={() => setStatusFilter("qualified")}>유력</button>
-              <button className={statusFilter === "priority" ? "active" : ""} onClick={() => setStatusFilter("priority")}>검증 우선</button>
-              <button className={statusFilter === "review" ? "active" : ""} onClick={() => setStatusFilter("review")}>검토</button>
+              <button className={statusFilter === "verification_needed" ? "active" : ""} onClick={() => setStatusFilter("verification_needed")}>검증 필요</button>
+              <button className={statusFilter === "recommended" ? "active" : ""} onClick={() => setStatusFilter("recommended")}>추천 후보</button>
+              <button className={statusFilter === "duplicate_passed" ? "active" : ""} onClick={() => setStatusFilter("duplicate_passed")}>중복 통과</button>
+              <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증</button>
+              <button className={statusFilter === "dm_ready" ? "active" : ""} onClick={() => setStatusFilter("dm_ready")}>DM 준비</button>
             </div>
             {action && (
               <button className="secondary action-button" onClick={() => runAutomation(action.mode)} disabled={automationLoading || !filteredCandidates.length}>
@@ -287,9 +291,9 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
           {candidates.map((candidate) => {
             const state = getCandidateViewState(candidate);
             return (
-              <tr key={candidate.handle} className={state === "review" ? "review-row" : ""}>
+              <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
-                <td><span className={`candidate-state ${state}`}>{stateLabel(state)}</span></td>
+                <td><span className={`candidate-state ${stateTone(state)}`}>{stateLabel(state)}</span></td>
                 <td className="status">{metricLabel(candidate)}</td>
                 <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
@@ -315,8 +319,8 @@ function SettingsModal({ settings, onClose }: { settings: AutomationSettings | n
           <div className="settings-content">
             <SettingRow label="OpenCode" value={`${settings.openCodeCommand} run`} />
             <SettingRow label="배치" value={`최대 ${settings.batchSize}명`} />
-            <SettingRow label="유력 버튼" value={settings.modes.qualified} />
-            <SettingRow label="검증 우선 버튼" value={settings.modes.priority} />
+            <SettingRow label="중복 검사 버튼" value={settings.modes.qualified} />
+            <SettingRow label="최종 검증 버튼" value={settings.modes.priority} />
             <SettingRow label="중복 페이지" value={settings.duplicateUrl} mono />
             <div className="settings-rules"><span>공통 규칙</span>{settings.rules.map((rule) => <p key={rule}>• {rule}</p>)}</div>
           </div>
@@ -331,9 +335,18 @@ function SettingRow({ label, value, mono = false }: { label: string; value: stri
 }
 
 function stateLabel(state: CandidateViewState) {
-  if (state === "qualified") return "유력";
-  if (state === "priority") return "검증 우선";
-  return "검토";
+  if (state === "verification_needed") return "검증 필요";
+  if (state === "recommended") return "추천 후보";
+  if (state === "duplicate_passed") return "중복 통과";
+  if (state === "final_verification") return "최종 검증";
+  if (state === "dm_ready") return "DM 준비";
+  return "기존 상태";
+}
+
+function stateTone(state: CandidateViewState) {
+  if (state === "recommended" || state === "dm_ready") return "qualified";
+  if (state === "duplicate_passed" || state === "final_verification") return "priority";
+  return "review";
 }
 
 function evidenceSummary(candidate: DiscoveryCandidate) {
