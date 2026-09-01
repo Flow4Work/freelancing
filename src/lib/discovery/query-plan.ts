@@ -54,8 +54,34 @@ const FOOD_QUERIES = [
   "site:instagram.com 韓国 グルメ 日本語 creator Instagram",
 ];
 
-export function getQueryPlan(category: SearchCategory) {
-  return category === "beauty" ? BEAUTY_QUERIES : FOOD_QUERIES;
+const BEAUTY_EXPANSIONS = [
+  "",
+  "2026 最新",
+  "リール VLOG",
+  "体験 レビュー",
+  "月1 渡韓",
+  "韓国在住",
+  "ソウル 釜山",
+  "コスメ 美容医療",
+];
+
+const FOOD_EXPANSIONS = [
+  "",
+  "2026 最新",
+  "リール VLOG",
+  "食べ歩き レビュー",
+  "月1 渡韓",
+  "韓国在住",
+  "ソウル 釜山",
+  "ローカル グルメ",
+];
+
+export function getQueryPlan(category: SearchCategory, runNo = 1) {
+  const base = category === "beauty" ? BEAUTY_QUERIES : FOOD_QUERIES;
+  const expansions = category === "beauty" ? BEAUTY_EXPANSIONS : FOOD_EXPANSIONS;
+  const suffix = expansions[Math.max(0, runNo - 1) % expansions.length];
+  if (!suffix) return base;
+  return base.map((query) => `${query} ${suffix}`);
 }
 
 export const FOOD_REVIEW_SIGNALS = ["レシピ", "おうちごはん", "自炊", "料理教室", "recipe", "cooking"];
