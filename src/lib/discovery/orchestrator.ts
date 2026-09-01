@@ -4,6 +4,7 @@ import { assessCandidate } from "./quality";
 import { getConfiguredProviders } from "./providers";
 import type { CandidateStatus, DiscoveryCandidate, DiscoveryResponse, RawSearchResult, SearchCategory, SearchProvider } from "./types";
 import { findExistingHandles, saveCandidates } from "@/lib/supabase/candidates";
+import { beginDiscoveryRun } from "@/lib/supabase/discovery-runs";
 import { isSupabaseConfigured } from "@/lib/supabase/admin";
 
 export class NoSearchProvidersError extends Error {}
@@ -19,7 +20,8 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   const providers = getConfiguredProviders();
   if (!providers.length) throw new NoSearchProvidersError();
 
-  const queries = getQueryPlan(category);
+  const runNo = await beginDiscoveryRun(category);
+  const queries = getQueryPlan(category, runNo);
   const concurrency = clamp(Number(process.env.DISCOVERY_CONCURRENCY ?? 4), 1, 8);
   const fresh = new Map<string, DiscoveryCandidate>();
   const rejected = new Map<string, DiscoveryCandidate>();
@@ -29,8 +31,8 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   let filteredNoise = 0;
   let queriesRun = 0;
 
-  // 모든 검색 lane을 실행한 뒤 유력 후보를 먼저 정렬한다.
-  // "목표 수를 먼저 채운 검색 결과"가 품질 좋은 후반 쿼리를 막지 않게 하기 위함이다.
+  // Every run uses a persisted query expansion lane. Existing qualified/reviewed/rejected
+  // handles are blocked by Supabase, so repeated searches add only unseen candidates.
   for (let offset = 0; offset < queries.length; offset += concurrency) {
     const wave = queries.slice(offset, offset + concurrency);
     const settled = await Promise.allSettled(
@@ -68,7 +70,6 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
     }
   }
 
-  // 명백한 사업체/공식계정도 상태와 사유를 저장해 다음 검색에서 반복 노출되지 않게 한다.
   await saveCandidates([...fresh.values(), ...rejected.values()]);
 
   const ranked = [...fresh.values()].sort(compareCandidates);
@@ -77,12 +78,13 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   const reviewCount = candidates.filter((candidate) => candidate.candidateStatus === "needs_review").length;
 
   if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 중복 기록은 저장되지 않습니다.");
-  if (candidates.length < targetCount) warnings.push(`엄격 필터 후 ${candidates.length}명만 확보했습니다. 후보를 억지로 채우지 않고 검색 확장이 필요합니다.`);
+  if (candidates.length < targetCount) warnings.push(`이번 검색에서는 신규 ${candidates.length}명만 확보했습니다. 기존 후보를 재사용하지 않고 다음 검색 lane으로 이어갑니다.`);
   if (reviewCount > 0) warnings.push(`${reviewCount}명은 일본 타깃·한국 접점·장르 중 일부 근거가 약해 Instagram 원본 확인이 필요합니다.`);
 
   return {
     category,
     targetCount,
+    runNo,
     candidates,
     qualifiedCount,
     reviewCount,
@@ -99,7 +101,6 @@ async function searchWithFallback(query: string, providers: SearchProvider[], st
   for (let attempt = 0; attempt < providers.length; attempt += 1) {
     const provider = providers[(startIndex + attempt) % providers.length];
     try {
-      // 검색 호출 수를 늘리지 않고 query당 recall을 높인다.
       return await provider.search(query, 18);
     } catch (error) {
       lastError = error;
