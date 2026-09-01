@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
@@ -33,8 +33,10 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
 
   const promptPath = path.join(root, `${input.jobId}.md`);
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
-  const readyPath = path.join(root, `${input.jobId}.ready`);
-  await rm(readyPath, { force: true });
+  const invokedPath = path.join(root, `${input.jobId}.invoked`);
+  const failedPath = path.join(root, `${input.jobId}.failed`);
+  await rm(invokedPath, { force: true });
+  await rm(failedPath, { force: true });
   await writeFile(promptPath, input.prompt, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
@@ -46,7 +48,8 @@ try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · ${input.title}`)} }
 Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
-$ReadyFile = ${psQuote(readyPath)}
+$InvokedFile = ${psQuote(invokedPath)}
+$FailedFile = ${psQuote(failedPath)}
 
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
@@ -55,10 +58,10 @@ try {
     throw "FixUp Scout 프롬프트가 비어 있습니다."
   }
 
-  [IO.File]::WriteAllText($ReadyFile, "ready", $Utf8)
-  Write-Host "[FixUp Scout] ${input.title} · OpenCode 준비 완료" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] OpenCode TUI를 시작합니다. 작업 프롬프트가 자동으로 전달됩니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] ${input.title} · OpenCode 시작" -ForegroundColor Cyan
+  Write-Host "[FixUp Scout] 작업 프롬프트를 OpenCode TUI에 자동 전달합니다." -ForegroundColor DarkGray
   Write-Host ""
+  [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
 
   & $OpenCode --prompt $Prompt
   $Code = $LASTEXITCODE
@@ -70,12 +73,15 @@ try {
   Write-Host ""
   Write-Host "[FixUp Scout] OpenCode가 종료되었습니다. Scout 화면의 결과 반영 여부를 확인하세요." -ForegroundColor Green
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $ReadyFile -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $InvokedFile -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $FailedFile -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
 }
 catch {
+  $FailureMessage = $_.Exception.Message
+  try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
   Write-Host ""
-  Write-Host "[FixUp Scout] 실행 실패: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
   Write-Host "이 창을 닫지 않고 유지합니다." -ForegroundColor Yellow
   Read-Host "확인 후 Enter"
   exit 1
@@ -97,7 +103,7 @@ catch {
 
   try {
     await waitForChildSpawn(child);
-    await waitForReadyFile(child, readyPath);
+    await waitForOpenCodeStart(child, invokedPath, failedPath);
   } catch (error) {
     child.unref();
     throw error;
@@ -135,20 +141,46 @@ async function waitForChildSpawn(child: ChildProcess) {
   });
 }
 
-async function waitForReadyFile(child: ChildProcess, readyPath: string) {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
+async function waitForOpenCodeStart(child: ChildProcess, invokedPath: string, failedPath: string) {
+  const invokeDeadline = Date.now() + 5000;
+  while (Date.now() < invokeDeadline) {
+    const failure = await readFailure(failedPath);
+    if (failure) throw new Error(`OpenCode 실행 실패: ${failure}`);
+    if (child.exitCode !== null) {
+      throw new Error(`PowerShell이 OpenCode 호출 전에 종료되었습니다. (exit ${child.exitCode})`);
+    }
+
     try {
-      await access(readyPath);
-      return;
+      await access(invokedPath);
+      break;
     } catch {
-      if (child.exitCode !== null) {
-        throw new Error(`PowerShell이 OpenCode 실행 준비 전에 종료되었습니다. (exit ${child.exitCode})`);
-      }
       await sleep(100);
     }
   }
-  throw new Error("PowerShell은 시작됐지만 OpenCode 실행 준비를 확인하지 못했습니다. 열린 창의 오류를 확인하세요.");
+
+  try {
+    await access(invokedPath);
+  } catch {
+    throw new Error("PowerShell은 시작됐지만 OpenCode 호출 단계까지 진입하지 못했습니다. 열린 창의 오류를 확인하세요.");
+  }
+
+  const aliveDeadline = Date.now() + 1200;
+  while (Date.now() < aliveDeadline) {
+    const failure = await readFailure(failedPath);
+    if (failure) throw new Error(`OpenCode 실행 실패: ${failure}`);
+    if (child.exitCode !== null) {
+      throw new Error(`OpenCode가 시작 직후 종료되었습니다. (exit ${child.exitCode})`);
+    }
+    await sleep(100);
+  }
+}
+
+async function readFailure(failedPath: string) {
+  try {
+    return (await readFile(failedPath, "utf8")).trim() || "알 수 없는 오류";
+  } catch {
+    return null;
+  }
 }
 
 function sleep(ms: number) {
