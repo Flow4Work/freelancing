@@ -2,8 +2,8 @@ import type { InstagramEvidenceKind } from "./instagram";
 import type { CandidateStatus, SearchCategory } from "./types";
 
 const HANDLE_BUSINESS_PATTERNS = [
-  /(?:^|[._-])official(?:$|[._-])/i,
-  /(?:clinic|hospital|derm|hifuka|pharmacy|massage|esthe|aesthetics?|recruit|academy)(?:$|[._-])/i,
+  /official/i,
+  /clinic|hospital|medical|derm|hifuka|pharmacy|massage|esthe|aesthetics?|recruit|academy/i,
   /(?:^|[._-])(?:salon|shop|store|corp|company)(?:$|[._-])/i,
   /beauty_product/i,
 ];
@@ -27,6 +27,13 @@ const PROFILE_BUSINESS_PATTERNS = [
   /(?:OPEN|営業時間)\s*[:：]?\s*\d{1,2}/i,
   /お店です/i,
   /店舗(?:情報|一覧)/i,
+];
+
+const PROFILE_AGGREGATOR_PATTERNS = [
+  /情報メディア/i,
+  /韓国(?:最新)?ニュース/i,
+  /毎日.{0,10}(?:韓国|最新情報).{0,10}(?:発信|投稿)/i,
+  /(?:まとめ|キュレーション).{0,8}(?:アカウント|メディア)/i,
 ];
 
 const JAPAN_IDENTITY_PATTERNS: Array<[RegExp, string]> = [
@@ -104,13 +111,15 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
   const categoryRelevant = input.category === "beauty"
     ? BEAUTY_PATTERNS.some((pattern) => pattern.test(combined))
     : FOOD_PATTERNS.some((pattern) => pattern.test(combined));
+  const aggregatorLike = input.evidenceKind === "profile" && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(combined));
 
   if (!targetSignals.length) flags.push("일본 타깃 근거 약함");
   if (!koreaSignals.length) flags.push("한국 접점 근거 약함");
   if (!categoryRelevant) flags.push("장르 근거 추가확인");
+  if (aggregatorLike) flags.push("미디어/정보계정 여부 확인");
   if (input.evidenceKind === "content") flags.push("게시물 근거·프로필 재확인");
 
-  const candidateStatus: CandidateStatus = targetSignals.length && koreaSignals.length && categoryRelevant
+  const candidateStatus: CandidateStatus = targetSignals.length && koreaSignals.length && categoryRelevant && !aggregatorLike
     ? "search_qualified"
     : "needs_review";
 
