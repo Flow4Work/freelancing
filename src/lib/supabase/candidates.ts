@@ -59,7 +59,7 @@ export async function listCandidates(category: SearchCategory) {
       });
 
       if (assessment.candidateStatus === "hard_reject") return [];
-      candidateStatus = assessment.candidateStatus;
+      candidateStatus = assessment.candidateStatus === "search_qualified" ? "search_qualified" : "needs_review";
       targetSignals = assessment.targetSignals;
       koreaSignals = assessment.koreaSignals;
       flags = assessment.flags;
