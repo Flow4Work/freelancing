@@ -43,15 +43,13 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
     rm(completedPath, { force: true }),
   ]);
 
-  const completionInstruction = `
+  const duplicatePriorityInstruction = input.title === "중복 확인"
+    ? `\n\n[최우선 실행 규칙]\n- 후보는 주어진 순서대로 정확히 한 번씩만 검사한다. 이미 검사한 후보를 다시 검사하지 않는다.\n- 목록에 없는 테스트 계정을 입력하지 않는다.\n- 결과 형식을 알아보기 위한 추가 실험, iframe/DOM 구조 연구, 디버깅, playwright_b_browser_run_code_unsafe 사용을 금지한다.\n- 로그인 후 입력칸과 중복 확인 버튼을 찾으면 같은 폼을 계속 사용한다. 실제 동작 실패가 없는 한 다시 탐색하지 않는다.\n- 각 후보는 입력칸 비우기 → ID 입력 → 중복 확인 클릭 → 화면 결과 판정만 수행한다.\n- 마지막 후보 판정 직후 즉시 전체 결과를 localhost:3000/api/duplicate/results 로 POST한다.\n- POST 응답의 ok:true를 확인한 뒤에는 브라우저 검색/검사/재확인을 단 한 번도 더 하지 않고 바로 완료 신호를 만든다.\n- 후보 하나라도 판정할 수 없으면 추가 연구하지 말고 즉시 실패 종료한다.`
+    : "";
 
-마지막 성공 신호:
-- localhost 결과 제출 응답의 \"ok\":true를 실제 확인한 뒤에만 아래 PowerShell 명령을 정확히 한 번 실행한다.
-- 제출 실패, 로그인 실패, 검증 실패, 중간 종료 상태에서는 이 파일을 절대 만들지 않는다.
-Set-Content -LiteralPath ${psQuote(completedPath)} -Value ok -Encoding ASCII
-- 이 완료 신호까지 만든 뒤에만 OpenCode 작업을 정상 종료한다.`;
+  const completionInstruction = `\n\n마지막 성공 신호:\n- localhost 결과 제출 응답의 \"ok\":true를 실제 확인한 뒤에만 아래 PowerShell 명령을 정확히 한 번 실행한다.\n- 제출 실패, 로그인 실패, 검증 실패, 중간 종료 상태에서는 이 파일을 절대 만들지 않는다.\nSet-Content -LiteralPath ${psQuote(completedPath)} -Value ok -Encoding ASCII\n- 이 완료 신호까지 만든 뒤에만 OpenCode 작업을 정상 종료한다.`;
 
-  await writeFile(promptPath, `${input.prompt}${completionInstruction}`, { encoding: "utf8" });
+  await writeFile(promptPath, `${input.prompt}${duplicatePriorityInstruction}${completionInstruction}`, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -98,9 +96,10 @@ try {
 
   Write-Host ""
   Write-Host "[FixUp Scout] 완료. localhost 결과 제출 확인됨." -ForegroundColor Green
+  Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $CompletedFile -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 3
+  Read-Host "창을 닫으려면 Enter"
   exit 0
 }
 catch {
@@ -108,14 +107,12 @@ catch {
   try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
   Write-Host ""
   Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
-  Write-Host "결과 제출이 확인되지 않았으므로 이 창을 유지합니다." -ForegroundColor Yellow
-  Read-Host "확인 후 Enter"
+  Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
+  Read-Host "창을 닫으려면 Enter"
   exit 1
 }
 `;
 
-  // Windows PowerShell 5.1은 BOM 없는 UTF-8 .ps1의 비ASCII 문자를 ANSI로 오해한다.
-  // 사용자 경로/창 제목/로그에 한글이 있으므로 실행 스크립트는 반드시 UTF-8 BOM으로 저장한다.
   await writeFile(scriptPath, `\uFEFF${script}`, { encoding: "utf8" });
 
   const launchCommand = `$p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",${psQuote(scriptPath)}) -WorkingDirectory ${psQuote(process.cwd())} -WindowStyle Normal -PassThru; [Console]::Out.Write($p.Id)`;
@@ -158,7 +155,6 @@ async function waitForOpenCodeInvocation(invokedPath: string, failedPath: string
 
     const invoked = await readTextIfPresent(invokedPath);
     if (invoked === "invoked") {
-      // marker는 스크립트가 삭제하지 않는다. 따라서 OpenCode가 아주 빨리 끝나도 레이스가 없다.
       await sleep(300);
       const immediateFailure = await readTextIfPresent(failedPath);
       if (immediateFailure) throw new Error(`OpenCode 실행 실패: ${immediateFailure}`);
