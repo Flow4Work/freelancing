@@ -3,9 +3,10 @@ import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
-// 검토 중인 후보는 다음 검색에서 새 근거를 더 받을 수 있게 막지 않는다.
-// 유력/검증완료/명백한 제외/비공개/컨택완료만 재발굴을 차단한다.
+// 검토 중이면서 Instagram 미검증인 후보만 다음 검색에서 근거를 더 받는다.
+// 유력/검증완료/명백한 제외/비공개/컨택완료는 재발굴로 덮어쓰지 않는다.
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "hard_reject", "qualified", "private", "contacted"]);
+const FINAL_VERIFICATION_STATUSES = new Set(["verified", "insufficient", "private", "rejected", "hard_reject"]);
 const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
 
 export async function findExistingHandles(handles: string[]) {
@@ -16,14 +17,19 @@ export async function findExistingHandles(handles: string[]) {
   const blocked = new Set<string>();
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, discovery_status")
+    .select("normalized_handle, discovery_status, verification_status")
     .in("normalized_handle", normalized);
 
   if (error) {
     console.warn("supabase_duplicate_check_failed", error.message);
   } else {
     for (const row of data ?? []) {
-      if (DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))) blocked.add(String(row.normalized_handle));
+      if (
+        DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))
+        || FINAL_VERIFICATION_STATUSES.has(String(row.verification_status))
+      ) {
+        blocked.add(String(row.normalized_handle));
+      }
     }
   }
 
@@ -41,6 +47,7 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
     .from("creator_candidates")
     .select("normalized_handle, source_provider, evidence_url, evidence_text, evidence_kind, flags, discovery_status")
     .eq("category", category)
+    .eq("verification_status", "needs_instagram")
     .in("normalized_handle", handles)
     .in("discovery_status", ["discovered", "needs_review"]);
 
