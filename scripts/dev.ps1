@@ -3,6 +3,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1에서도 한글 로그가 깨지지 않도록 UTF-8 출력 고정.
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8
+$OutputEncoding = $Utf8
+try { chcp 65001 > $null } catch {}
+
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
@@ -27,5 +34,6 @@ if (-not $SkipInstall -and -not (Test-Path "node_modules")) {
   if ($LASTEXITCODE -ne 0) { throw "npm install 실패" }
 }
 
+Write-Host "[FixUp Scout] 품질 규칙과 TypeScript를 확인하려면: npm run typecheck" -ForegroundColor DarkGray
 Write-Host "[FixUp Scout] http://localhost:3000" -ForegroundColor Green
 & npm run dev
