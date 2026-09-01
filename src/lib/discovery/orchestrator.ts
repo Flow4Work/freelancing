@@ -42,8 +42,9 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
     }
   }
 
-  const candidates = [...fresh.values()].slice(0, targetCount);
-  await saveCandidates(candidates);
+  const allFresh = [...fresh.values()];
+  await saveCandidates(allFresh);
+  const candidates = allFresh.slice(0, targetCount);
 
   if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 중복 기록은 저장되지 않습니다.");
   if (candidates.length < targetCount) warnings.push(`검색 풀에서 ${candidates.length}명만 확보했습니다. 다음 단계에서 검색어 확장 로직을 추가해야 합니다.`);
