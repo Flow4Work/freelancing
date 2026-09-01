@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 
   try {
     const handles = parsed.data.results.map((result) => result.handle);
-    await assertVerificationJob(parsed.data.jobId, parsed.data.category, handles);
+    await assertVerificationJob(parsed.data.jobId, parsed.data.category, handles, "instagram");
     const saved = await applyInstagramVerificationResults(parsed.data.category, parsed.data.results);
     await completeVerificationJob(parsed.data.jobId);
     return NextResponse.json({ ok: true, jobId: parsed.data.jobId, ...saved });
