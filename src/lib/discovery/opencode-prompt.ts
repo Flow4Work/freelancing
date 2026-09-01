@@ -13,7 +13,7 @@ export function buildOpenCodeVerificationPrompt(candidates: DiscoveryCandidate[]
 금지: 등록하기 클릭, 새 로그인, DM/팔로우/좋아요/댓글, 후보 외 탐색, 숫자 추정, Reels 평균 계산.
 
 처리:
-1. 후보별 FixUp 중복 확인 버튼을 눌러 실제 문구로 available / duplicate / protected / unknown 판정. 현재 세션으로 중복 페이지 진입 불가면 전부 unknown.
+1. 중복 페이지 입력칸에는 @를 뺀 Instagram ID만 입력하고 중복 확인 버튼을 눌러 실제 문구로 available / duplicate / protected / unknown 판정. 현재 세션으로 페이지 진입 불가면 전부 unknown.
 2. available만 Instagram 확인. 나머지는 Instagram을 열지 않는다.
 3. Instagram에서 존재/비공개, 개인 크리에이터 여부, BIO, 팔로워, 최근 90일 활동, 일본 타깃, 한국 접점, ${categoryLabel} 반복 콘텐츠를 확인한다.
 4. 실제 게시일 기준 최신 Reel 최대 10개의 url / postedAt / views 원본만 수집한다. pinned 순서를 최신순으로 가정하지 않는다. 확인 불가는 null.
