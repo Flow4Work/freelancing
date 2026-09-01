@@ -1,22 +1,95 @@
 import type { DiscoveryCandidate } from "./types";
 
-export type CandidateViewState = "qualified" | "priority" | "review";
+export type CandidateViewState =
+  | "verification_needed"
+  | "recommended"
+  | "duplicate_passed"
+  | "final_verification"
+  | "dm_ready"
+  | "unmapped";
+
+const KNOWN_DISCOVERY_STATUSES = new Set([
+  "discovered",
+  "search_qualified",
+  "needs_review",
+  "hard_reject",
+  "qualified",
+  "private",
+  "contacted",
+]);
+const KNOWN_VERIFICATION_STATUSES = new Set([
+  "needs_instagram",
+  "verified",
+  "insufficient",
+  "private",
+  "rejected",
+  "hard_reject",
+]);
+const KNOWN_DUPLICATE_STATUSES = new Set([
+  "not_checked",
+  "available",
+  "duplicate",
+  "protected",
+  "unknown",
+]);
 
 export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateViewState {
-  if (candidate.candidateStatus !== "search_qualified") {
-    return "review";
+  const discoveryStatus = candidate.storedDiscoveryStatus ?? candidate.candidateStatus;
+  const verificationStatus = candidate.storedVerificationStatus ?? candidate.verificationStatus;
+  const duplicateStatus = candidate.storedDuplicateCheckStatus ?? candidate.duplicateCheckStatus;
+
+  if (
+    !KNOWN_DISCOVERY_STATUSES.has(discoveryStatus)
+    || !KNOWN_VERIFICATION_STATUSES.has(verificationStatus)
+    || !KNOWN_DUPLICATE_STATUSES.has(duplicateStatus)
+  ) {
+    return "unmapped";
   }
 
-  // 중복 확인을 통과한 후보만 Instagram 원본 검증 단계로 보낸다.
-  if (candidate.verificationStatus === "needs_instagram" && candidate.duplicateCheckStatus === "available") {
-    return "priority";
+  // 컨택 완료·제외·중복 후보는 데이터는 보존하되 새 작업 단계로 추측 이동시키지 않는다.
+  if (
+    candidate.isContacted
+    || discoveryStatus === "contacted"
+    || discoveryStatus === "hard_reject"
+    || discoveryStatus === "private"
+    || verificationStatus === "hard_reject"
+    || duplicateStatus === "duplicate"
+    || duplicateStatus === "protected"
+  ) {
+    return "unmapped";
   }
 
-  // 검색 유력 후보는 중복 확인 전에는 유력에 남고,
-  // Instagram 검증까지 끝난 최종 유력 후보도 기존처럼 유력에 유지한다.
-  if (candidate.verificationStatus === "needs_instagram" || candidate.verificationStatus === "verified") {
-    return "qualified";
+  // Google Apps Script 중복 통과 이후 단계는 반드시 Instagram 최종 검증 순서를 따른다.
+  if (duplicateStatus === "available") {
+    if (discoveryStatus === "qualified" && verificationStatus === "verified") {
+      return "dm_ready";
+    }
+
+    if (candidate.instagramVerificationPending) {
+      return "final_verification";
+    }
+
+    if (verificationStatus === "needs_instagram") {
+      return "duplicate_passed";
+    }
+
+    if (verificationStatus === "verified" || verificationStatus === "insufficient") {
+      return "final_verification";
+    }
+
+    return "unmapped";
   }
 
-  return "review";
+  // 중복 검사를 아직 통과하지 못한 후보는 후보 찾기 단계의 의미만 유지한다.
+  if (duplicateStatus === "not_checked" || duplicateStatus === "unknown") {
+    if (discoveryStatus === "search_qualified" || discoveryStatus === "qualified") {
+      return "recommended";
+    }
+
+    if (discoveryStatus === "discovered" || discoveryStatus === "needs_review") {
+      return "verification_needed";
+    }
+  }
+
+  return "unmapped";
 }
