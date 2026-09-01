@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
@@ -33,41 +33,125 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
 
   const promptPath = path.join(root, `${input.jobId}.md`);
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
+  const readyPath = path.join(root, `${input.jobId}.ready`);
+  await rm(readyPath, { force: true });
   await writeFile(promptPath, input.prompt, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-$OutputEncoding = [Console]::OutputEncoding
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8
+$OutputEncoding = $Utf8
+try { chcp 65001 > $null } catch {}
 try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · ${input.title}`)} } catch {}
 Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
-Write-Host "[FixUp Scout] ${input.title} 시작" -ForegroundColor Cyan
-& $OpenCode run --file $PromptFile "첨부된 FixUp Scout 작업 지시를 그대로 실행하고 localhost 결과 제출까지 완료해."
-$Code = $LASTEXITCODE
-if ($Code -ne 0) {
+$ReadyFile = ${psQuote(readyPath)}
+
+try {
+  $ResolvedOpenCode = Get-Command $OpenCode -ErrorAction Stop
+  $Prompt = [IO.File]::ReadAllText($PromptFile, [Text.Encoding]::UTF8)
+  if ([string]::IsNullOrWhiteSpace($Prompt)) {
+    throw "FixUp Scout 프롬프트가 비어 있습니다."
+  }
+
+  [IO.File]::WriteAllText($ReadyFile, "ready", $Utf8)
+  Write-Host "[FixUp Scout] ${input.title} · OpenCode 준비 완료" -ForegroundColor Cyan
+  Write-Host "[FixUp Scout] OpenCode TUI를 시작합니다. 작업 프롬프트가 자동으로 전달됩니다." -ForegroundColor DarkGray
   Write-Host ""
-  Write-Host "[FixUp Scout] OpenCode 실행 실패 (exit $Code)" -ForegroundColor Red
-  Read-Host "확인 후 Enter"
-  exit $Code
+
+  & $ResolvedOpenCode.Source --prompt $Prompt
+  $Code = $LASTEXITCODE
+  if ($null -eq $Code) { $Code = 0 }
+  if ($Code -ne 0) {
+    throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
+  }
+
+  Write-Host ""
+  Write-Host "[FixUp Scout] OpenCode가 종료되었습니다. Scout 화면의 결과 반영 여부를 확인하세요." -ForegroundColor Green
+  Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $ReadyFile -ErrorAction SilentlyContinue
 }
-Write-Host ""
-Write-Host "[FixUp Scout] 완료. 결과는 Scout 화면에 자동 반영됩니다." -ForegroundColor Green
-Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
+catch {
+  Write-Host ""
+  Write-Host "[FixUp Scout] 실행 실패: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "이 창을 닫지 않고 유지합니다." -ForegroundColor Yellow
+  Read-Host "확인 후 Enter"
+  exit 1
+}
 `;
 
   await writeFile(scriptPath, script, { encoding: "utf8" });
 
-  const startCommand = `Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",${psQuote(scriptPath)})`;
   const child = spawn(
     "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-WindowStyle", "Hidden", "-Command", startCommand],
-    { detached: true, stdio: "ignore", windowsHide: true },
+    ["-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    },
   );
-  child.unref();
 
+  try {
+    await waitForChildSpawn(child);
+    await waitForReadyFile(child, readyPath);
+  } catch (error) {
+    child.unref();
+    throw error;
+  }
+
+  child.unref();
   return { command, promptPath };
+}
+
+async function waitForChildSpawn(child: ChildProcess) {
+  if (child.pid) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("PowerShell 창 시작 확인 시간이 초과되었습니다."));
+    }, 3000);
+
+    const onSpawn = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(new Error(`PowerShell 창을 시작하지 못했습니다: ${error.message}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("spawn", onSpawn);
+      child.off("error", onError);
+    };
+
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+  });
+}
+
+async function waitForReadyFile(child: ChildProcess, readyPath: string) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      await access(readyPath);
+      return;
+    } catch {
+      if (child.exitCode !== null) {
+        throw new Error(`PowerShell이 OpenCode 실행 준비 전에 종료되었습니다. (exit ${child.exitCode})`);
+      }
+      await sleep(100);
+    }
+  }
+  throw new Error("PowerShell은 시작됐지만 OpenCode 실행 준비를 확인하지 못했습니다. 열린 창의 오류를 확인하세요.");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function psQuote(value: string) {
