@@ -19,5 +19,9 @@ export async function GET() {
       "Reels 평균은 Scout가 원본 조회수로 계산",
       "완료 결과는 localhost API로 자동 반영",
     ],
+    promptDetails: {
+      qualified: "후보 ID만 FixUp 중복 페이지에 입력 → 중복 확인 버튼 클릭 → available / duplicate / protected / unknown 판정 → 결과를 /api/duplicate/results 로 자동 제출",
+      priority: "후보별 FixUp 중복 확인 → available만 Instagram 원본 확인 → 존재/공개/개인 Creator/BIO/팔로워/최근 활동/일본 타깃/한국 접점/장르 + 최신 Reel 최대 10개 원본 조회수 수집 → /api/verification/results 로 자동 제출",
+    },
   });
 }
