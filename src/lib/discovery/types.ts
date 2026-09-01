@@ -48,6 +48,11 @@ export type DiscoveryCandidate = {
   verificationStatus: VerificationStatus;
   verifiedAt: string | null;
   discoveredAt: string;
+  storedDiscoveryStatus?: string;
+  storedVerificationStatus?: string;
+  storedDuplicateCheckStatus?: string;
+  isContacted?: boolean;
+  instagramVerificationPending?: boolean;
 };
 
 export type DiscoveryResponse = {
