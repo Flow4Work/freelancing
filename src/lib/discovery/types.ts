@@ -1,12 +1,20 @@
 export type SearchCategory = "beauty" | "food";
 export type SearchProviderName = "exa" | "tavily";
 export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject";
+export type VerificationStatus = "needs_instagram" | "verified" | "insufficient" | "private" | "rejected" | "hard_reject";
+export type ReelMetricsStatus = "not_checked" | "ready" | "insufficient";
 
 export type RawSearchResult = {
   provider: SearchProviderName;
   url: string;
   title: string;
   text: string;
+};
+
+export type ReelSnapshot = {
+  url: string | null;
+  views: number | null;
+  postedAt: string | null;
 };
 
 export type DiscoveryCandidate = {
@@ -22,11 +30,19 @@ export type DiscoveryCandidate = {
   koreaSignals: string[];
   rejectReasons: string[];
   flags: string[];
+  bio: string | null;
   followers: number | null;
   reelAverage: number | null;
   reelMedian: number | null;
   reelSampleSize: number | null;
-  verificationStatus: "needs_instagram" | "hard_reject";
+  reelCheckedCount: number | null;
+  reelTotalConsidered: number | null;
+  reelMetricsStatus: ReelMetricsStatus;
+  reelViews: ReelSnapshot[];
+  lastActivityAt: string | null;
+  verificationNote: string | null;
+  verificationStatus: VerificationStatus;
+  verifiedAt: string | null;
   discoveredAt: string;
 };
 
@@ -47,6 +63,12 @@ export type DiscoveryResponse = {
 export type CandidateListResponse = {
   category: SearchCategory;
   candidates: DiscoveryCandidate[];
+};
+
+export type VerificationPromptResponse = {
+  jobId: string;
+  candidateCount: number;
+  prompt: string;
 };
 
 export interface SearchProvider {
