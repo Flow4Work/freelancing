@@ -5,7 +5,7 @@ import { getSupabaseAdmin } from "./admin";
 
 export type InstagramVerificationResult = {
   handle: string;
-  exists: boolean;
+  exists: boolean | null;
   isPrivate: boolean | null;
   isPersonalCreator: boolean | null;
   bio: string | null;
@@ -31,15 +31,8 @@ export async function applyInstagramVerificationResults(category: SearchCategory
 
   const handles = [...new Set(normalizedResults.map((result) => result.handle))];
   const [{ data: candidates, error: candidateError }, { data: contacted, error: contactedError }] = await Promise.all([
-    supabase
-      .from("creator_candidates")
-      .select("normalized_handle")
-      .eq("category", category)
-      .in("normalized_handle", handles),
-    supabase
-      .from("creator_contacted_handles")
-      .select("normalized_handle")
-      .in("normalized_handle", handles),
+    supabase.from("creator_candidates").select("normalized_handle").eq("category", category).in("normalized_handle", handles),
+    supabase.from("creator_contacted_handles").select("normalized_handle").in("normalized_handle", handles),
   ]);
 
   if (candidateError) throw new Error(`후보 확인 실패: ${candidateError.message}`);
@@ -92,11 +85,12 @@ export async function applyInstagramVerificationResults(category: SearchCategory
 }
 
 function decideVerification(result: InstagramVerificationResult) {
-  if (!result.exists) return { discoveryStatus: "hard_reject", verificationStatus: "rejected" } as const;
+  if (result.exists === false) return { discoveryStatus: "hard_reject", verificationStatus: "rejected" } as const;
   if (result.isPrivate === true) return { discoveryStatus: "private", verificationStatus: "private" } as const;
   if (result.isPersonalCreator === false) return { discoveryStatus: "hard_reject", verificationStatus: "rejected" } as const;
 
-  const coreUnknown = result.isPrivate === null
+  const coreUnknown = result.exists === null
+    || result.isPrivate === null
     || result.isPersonalCreator === null
     || result.japaneseTarget === null
     || result.koreaConnection === null
@@ -104,12 +98,13 @@ function decideVerification(result: InstagramVerificationResult) {
     || result.recentActivity === null
     || result.followers === null;
 
-  const qualitativePass = result.isPrivate === false
+  const qualitativePass = result.exists === true
+    && result.isPrivate === false
     && result.isPersonalCreator === true
     && result.japaneseTarget === true
     && result.koreaConnection === true
     && result.categoryRelevant === true
-    && result.recentActivity !== false;
+    && result.recentActivity === true;
 
   return {
     discoveryStatus: qualitativePass && !coreUnknown ? "qualified" : "needs_review",
