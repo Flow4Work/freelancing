@@ -58,12 +58,12 @@ try {
     throw "FixUp Scout 프롬프트가 비어 있습니다."
   }
 
-  Write-Host "[FixUp Scout] ${input.title} · OpenCode 시작" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 작업 프롬프트를 OpenCode TUI에 자동 전달합니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
+  Write-Host "[FixUp Scout] 작업 프롬프트를 opencode run으로 전달합니다." -ForegroundColor DarkGray
   Write-Host ""
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
 
-  & $OpenCode --prompt $Prompt
+  & $OpenCode run $Prompt
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
   if ($Code -ne 0) {
@@ -71,7 +71,7 @@ try {
   }
 
   Write-Host ""
-  Write-Host "[FixUp Scout] OpenCode가 종료되었습니다. Scout 화면의 결과 반영 여부를 확인하세요." -ForegroundColor Green
+  Write-Host "[FixUp Scout] 완료. 결과는 Scout 화면에 자동 반영됩니다." -ForegroundColor Green
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $InvokedFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $FailedFile -ErrorAction SilentlyContinue
@@ -109,8 +109,9 @@ catch {
     throw error;
   }
 
+  const processId = child.pid ?? null;
   child.unref();
-  return { command, promptPath };
+  return { command, promptPath, processId };
 }
 
 async function waitForChildSpawn(child: ChildProcess) {
