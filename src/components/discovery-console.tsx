@@ -22,14 +22,6 @@ type AutomationRunResponse = {
   error?: string;
 };
 
-type AutomationSettings = {
-  openCodeCommand: string;
-  duplicateUrl: string;
-  batchSize: number;
-  modes: { qualified: string; priority: string };
-  rules: string[];
-};
-
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
@@ -54,8 +46,6 @@ export function DiscoveryConsole() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [automationWatchUntil, setAutomationWatchUntil] = useState<number | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<AutomationSettings | null>(null);
 
   useEffect(() => {
     fetch("/api/health")
@@ -221,24 +211,8 @@ export function DiscoveryConsole() {
     }
   }
 
-  async function openSettings() {
-    setSettingsOpen(true);
-    if (settings) return;
-    try {
-      const response = await fetch("/api/automation/settings", { cache: "no-store" });
-      const payload = await response.json() as AutomationSettings;
-      if (response.ok) setSettings(payload);
-    } catch {
-      setSettings(null);
-    }
-  }
-
   return (
     <>
-      <div className="console-toolbar">
-        <button className="settings-button" onClick={openSettings}>⚙ 설정</button>
-      </div>
-
       <section className="card controls">
         <div className="control-row">
           <div className="segment" aria-label="검색 장르">
@@ -296,7 +270,6 @@ export function DiscoveryConsole() {
         {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} getState={candidateState} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
 
-      {settingsOpen && <SettingsModal settings={settings} onClose={() => setSettingsOpen(false)} />}
       {toast && <div className={`toast ${toast.kind}`}>{toast.message}</div>}
     </>
   );
@@ -329,33 +302,6 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
       </table>
     </div>
   );
-}
-
-function SettingsModal({ settings, onClose }: { settings: AutomationSettings | null; onClose: () => void }) {
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="자동 실행 설정" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="settings-head">
-          <div><strong>자동 실행 설정</strong><p>버튼이 실제로 실행하는 내용을 확인합니다.</p></div>
-          <button className="icon-button" onClick={onClose} aria-label="설정 닫기">×</button>
-        </div>
-        {settings ? (
-          <div className="settings-content">
-            <SettingRow label="OpenCode" value={`${settings.openCodeCommand} run`} />
-            <SettingRow label="배치" value={`최대 ${settings.batchSize}명`} />
-            <SettingRow label="유력 버튼" value={settings.modes.qualified} />
-            <SettingRow label="검증 우선 버튼" value={settings.modes.priority} />
-            <SettingRow label="중복 페이지" value={settings.duplicateUrl} mono />
-            <div className="settings-rules"><span>공통 규칙</span>{settings.rules.map((rule) => <p key={rule}>• {rule}</p>)}</div>
-          </div>
-        ) : <div className="settings-loading">설정을 불러오는 중…</div>}
-      </section>
-    </div>
-  );
-}
-
-function SettingRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div className="setting-row"><span>{label}</span><strong className={mono ? "setting-mono" : ""}>{value}</strong></div>;
 }
 
 function stateLabel(state: CandidateViewState) {
