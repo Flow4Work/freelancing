@@ -39,7 +39,7 @@ $Utf8 = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8
 try { chcp 65001 > $null } catch {}
 $OpenCode = ${psQuote(command)}
-$Captured = @(& $OpenCode run "Reply exactly OK." --title "FixUp Scout preflight" 2>&1)
+$Captured = @(& $OpenCode run "Reply exactly OK." 2>&1)
 $Code = $LASTEXITCODE
 if ($null -eq $Code) { $Code = 0 }
 $Captured | ForEach-Object { [Console]::Out.WriteLine([string]$_) }
@@ -122,7 +122,7 @@ try {
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
   $Captured = New-Object System.Collections.Generic.List[string]
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile 2>&1 | ForEach-Object {
+  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile --auto 2>&1 | ForEach-Object {
     $Line = [string]$_
     [void]$Captured.Add($Line)
     Write-Host $Line
