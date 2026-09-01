@@ -135,11 +135,13 @@ export async function listCandidates(category: SearchCategory) {
       && KNOWN_DUPLICATE_STATUSES.has(rawDuplicateStatus as DuplicateCheckStatus);
     const candidateStatus: DiscoveryCandidate["candidateStatus"] = !statusesKnown
       ? "hard_reject"
-      : rawDiscoveryStatus === "search_qualified" || rawDiscoveryStatus === "qualified"
-        ? "search_qualified"
-        : rawDiscoveryStatus === "discovered" || rawDiscoveryStatus === "needs_review"
-          ? "needs_review"
-          : "hard_reject";
+      : rawDiscoveryStatus === "qualified"
+        ? "qualified"
+        : rawDiscoveryStatus === "search_qualified"
+          ? "search_qualified"
+          : rawDiscoveryStatus === "discovered" || rawDiscoveryStatus === "needs_review"
+            ? "needs_review"
+            : "hard_reject";
 
     return {
       handle: String(row.normalized_handle),
