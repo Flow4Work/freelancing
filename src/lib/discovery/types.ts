@@ -4,6 +4,12 @@ export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject
 export type VerificationStatus = "needs_instagram" | "verified" | "insufficient" | "private" | "rejected" | "hard_reject";
 export type ReelMetricsStatus = "not_checked" | "ready" | "insufficient";
 export type DuplicateCheckStatus = "not_checked" | "available" | "duplicate" | "protected" | "unknown";
+export type AccountAvailability = "active" | "unavailable" | "unknown";
+export type AccountType = "creator" | "business" | "unknown";
+export type KoreaAffinity = "strong" | "yes" | "none" | "unknown";
+export type ContentFit = "beauty" | "food" | "korea_travel" | "lifestyle" | "other";
+export type Eligibility = "possible" | "fail" | "unknown";
+export type CandidateActivity = "active" | "unknown";
 
 export type RawSearchResult = {
   provider: SearchProviderName;
@@ -26,6 +32,12 @@ export type DiscoveryCandidate = {
   evidenceUrl: string;
   evidenceText: string;
   evidenceKind: "profile" | "content";
+  accountAvailability: AccountAvailability;
+  accountType: AccountType;
+  koreaAffinity: KoreaAffinity;
+  contentFit: ContentFit;
+  eligibility: Eligibility;
+  activity: CandidateActivity;
   candidateStatus: CandidateStatus;
   targetSignals: string[];
   koreaSignals: string[];
