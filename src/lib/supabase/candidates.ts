@@ -1,4 +1,4 @@
-import type { DiscoveryCandidate, DuplicateCheckStatus, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import type { AccountAvailability, AccountType, CandidateActivity, ContentFit, DiscoveryCandidate, DuplicateCheckStatus, Eligibility, KoreaAffinity, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
@@ -81,6 +81,7 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
       text: combinedText,
       profileText,
       category,
+      accountAvailability: candidate.accountAvailability,
     });
 
     const preservedReviewFlags = [
@@ -96,6 +97,11 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
       evidenceUrl: usePriorPrimary ? String(prior.evidence_url ?? candidate.evidenceUrl) : candidate.evidenceUrl,
       evidenceText: combinedText,
       evidenceKind,
+      accountType: assessment.accountType,
+      koreaAffinity: assessment.koreaAffinity,
+      contentFit: assessment.contentFit,
+      eligibility: assessment.eligibility,
+      activity: assessment.activity,
       candidateStatus: assessment.candidateStatus,
       targetSignals: assessment.targetSignals,
       koreaSignals: assessment.koreaSignals,
@@ -112,7 +118,7 @@ export async function listCandidates(category: SearchCategory) {
 
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
+    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, account_availability, account_type, korea_affinity, content_fit, eligibility, activity, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
     .eq("category", category)
     .order("first_seen_at", { ascending: false })
     .limit(1000);
@@ -151,6 +157,12 @@ export async function listCandidates(category: SearchCategory) {
       evidenceUrl: String(row.evidence_url ?? row.profile_url),
       evidenceText: String(row.evidence_text ?? ""),
       evidenceKind: row.evidence_kind === "content" ? "content" : "profile",
+      accountAvailability: normalizeAccountAvailability(row.account_availability),
+      accountType: normalizeAccountType(row.account_type),
+      koreaAffinity: normalizeKoreaAffinity(row.korea_affinity),
+      contentFit: normalizeContentFit(row.content_fit),
+      eligibility: normalizeEligibility(row.eligibility),
+      activity: normalizeActivity(row.activity),
       candidateStatus,
       targetSignals: stringArray(row.target_signals),
       koreaSignals: stringArray(row.korea_signals),
@@ -193,6 +205,12 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
       evidence_url: candidate.evidenceUrl,
       evidence_text: candidate.evidenceText,
       evidence_kind: candidate.evidenceKind,
+      account_availability: candidate.accountAvailability,
+      account_type: candidate.accountType,
+      korea_affinity: candidate.koreaAffinity,
+      content_fit: candidate.contentFit,
+      eligibility: candidate.eligibility,
+      activity: candidate.activity,
       target_signals: candidate.targetSignals,
       korea_signals: candidate.koreaSignals,
       flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)],
@@ -283,6 +301,31 @@ function normalizeDuplicateCheckStatus(value: unknown): DuplicateCheckStatus {
 
 function normalizeReelMetricsStatus(value: unknown): ReelMetricsStatus {
   return value === "ready" || value === "insufficient" ? value : "not_checked";
+}
+
+function normalizeAccountAvailability(value: unknown): AccountAvailability {
+  return value === "active" || value === "unavailable" ? value : "unknown";
+}
+
+function normalizeAccountType(value: unknown): AccountType {
+  return value === "creator" || value === "business" ? value : "unknown";
+}
+
+function normalizeKoreaAffinity(value: unknown): KoreaAffinity {
+  return value === "strong" || value === "yes" || value === "none" ? value : "unknown";
+}
+
+function normalizeContentFit(value: unknown): ContentFit {
+  const allowed: ContentFit[] = ["beauty", "food", "korea_travel", "lifestyle", "other"];
+  return allowed.includes(value as ContentFit) ? value as ContentFit : "other";
+}
+
+function normalizeEligibility(value: unknown): Eligibility {
+  return value === "possible" || value === "fail" ? value : "unknown";
+}
+
+function normalizeActivity(value: unknown): CandidateActivity {
+  return value === "active" ? "active" : "unknown";
 }
 
 function normalizeReelViews(value: unknown): ReelSnapshot[] {
