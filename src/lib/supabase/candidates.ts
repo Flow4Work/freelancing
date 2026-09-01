@@ -4,22 +4,40 @@ import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "contacted"]);
-const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified", "contacted"];
+const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
 
 export async function findExistingHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
-  const { data, error } = await supabase.from("creator_candidates").select("normalized_handle, discovery_status").in("normalized_handle", handles);
+
+  const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
+  const blocked = new Set<string>();
+
+  const { data, error } = await supabase
+    .from("creator_candidates")
+    .select("normalized_handle, discovery_status")
+    .in("normalized_handle", normalized);
+
   if (error) {
     console.warn("supabase_duplicate_check_failed", error.message);
-    return new Set<string>();
+  } else {
+    for (const row of data ?? []) {
+      if (DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))) {
+        blocked.add(String(row.normalized_handle));
+      }
+    }
   }
-  return new Set((data ?? []).filter((row) => DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))).map((row) => String(row.normalized_handle)));
+
+  const contacted = await findContactedHandles(normalized);
+  contacted.forEach((handle) => blocked.add(handle));
+
+  return blocked;
 }
 
 export async function listCandidates(category: SearchCategory) {
   const supabase = getSupabaseAdmin();
   if (!supabase) return [];
+
   const { data, error } = await supabase
     .from("creator_candidates")
     .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, followers, reel_average, reel_median, reel_sample_size, discovery_status, first_seen_at, last_seen_at")
@@ -27,28 +45,30 @@ export async function listCandidates(category: SearchCategory) {
     .in("discovery_status", VISIBLE_STATUSES)
     .order("first_seen_at", { ascending: false })
     .limit(1000);
+
   if (error) {
     console.warn("supabase_candidate_list_failed", error.message);
     return [];
   }
 
+  const handles = (data ?? []).map((row) => String(row.normalized_handle));
+  const contacted = await findContactedHandles(handles);
+
   return (data ?? []).flatMap((row): DiscoveryCandidate[] => {
     const handle = String(row.normalized_handle);
-    if (!isValidHandle(handle)) return [];
+    if (!isValidHandle(handle) || contacted.has(handle)) return [];
 
     const rawStatus = String(row.discovery_status);
     const evidenceKind = row.evidence_kind === "content" ? "content" : "profile";
     const evidenceText = String(row.evidence_text ?? "");
 
-    let candidateStatus: "search_qualified" | "needs_review" = rawStatus === "search_qualified" || rawStatus === "qualified" || rawStatus === "contacted"
+    let candidateStatus: "search_qualified" | "needs_review" = rawStatus === "search_qualified" || rawStatus === "qualified"
       ? "search_qualified"
       : "needs_review";
     let targetSignals = stringArray(row.target_signals);
     let koreaSignals = stringArray(row.korea_signals);
     let flags = stringArray(row.flags).filter((flag) => !flag.startsWith("제외:") && flag !== "기존 결과·재검증 필요");
 
-    // Phase-1 legacy rows were stored before the quality gate existed. Re-evaluate
-    // them from their stored evidence instead of forcing every old row to "review".
     if (rawStatus === "discovered") {
       const assessment = assessCandidate({
         handle,
@@ -91,27 +111,52 @@ export async function listCandidates(category: SearchCategory) {
 export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || candidates.length === 0) return;
-  const rows = candidates.map((candidate) => ({
-    handle: candidate.handle,
-    normalized_handle: candidate.handle,
-    profile_url: candidate.profileUrl,
-    category: candidate.category,
-    source_provider: candidate.sourceProvider,
-    evidence_url: candidate.evidenceUrl,
-    evidence_text: candidate.evidenceText,
-    evidence_kind: candidate.evidenceKind,
-    target_signals: candidate.targetSignals,
-    korea_signals: candidate.koreaSignals,
-    flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)],
-    verification_status: candidate.verificationStatus,
-    discovery_status: candidate.candidateStatus,
-    last_seen_at: candidate.discoveredAt,
-  }));
+
+  const contacted = await findContactedHandles(candidates.map((candidate) => candidate.handle));
+  const rows = candidates
+    .filter((candidate) => !contacted.has(candidate.handle))
+    .map((candidate) => ({
+      handle: candidate.handle,
+      normalized_handle: candidate.handle,
+      profile_url: candidate.profileUrl,
+      category: candidate.category,
+      source_provider: candidate.sourceProvider,
+      evidence_url: candidate.evidenceUrl,
+      evidence_text: candidate.evidenceText,
+      evidence_kind: candidate.evidenceKind,
+      target_signals: candidate.targetSignals,
+      korea_signals: candidate.koreaSignals,
+      flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)],
+      verification_status: candidate.verificationStatus,
+      discovery_status: candidate.candidateStatus,
+      last_seen_at: candidate.discoveredAt,
+    }));
+
+  if (!rows.length) return;
+
   const { error } = await supabase.from("creator_candidates").upsert(rows, { onConflict: "normalized_handle" });
   if (error) {
     console.error("supabase_candidate_save_failed", error.message);
     throw new Error(`후보 저장 실패: ${error.message}`);
   }
+}
+
+async function findContactedHandles(handles: string[]) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || handles.length === 0) return new Set<string>();
+
+  const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
+  const { data, error } = await supabase
+    .from("creator_contacted_handles")
+    .select("normalized_handle")
+    .in("normalized_handle", normalized);
+
+  if (error) {
+    console.warn("supabase_contacted_check_failed", error.message);
+    return new Set<string>();
+  }
+
+  return new Set((data ?? []).map((row) => String(row.normalized_handle)));
 }
 
 function stringArray(value: unknown) {
