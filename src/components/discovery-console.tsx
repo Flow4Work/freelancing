@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
+import { useEffect, useMemo, useState } from "react";
+import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
+import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt";
 
 type Health = {
   ok: boolean;
@@ -10,22 +11,26 @@ type Health = {
 };
 
 type Toast = { kind: "success" | "error"; message: string } | null;
+type StatusFilter = "all" | "search_qualified" | "needs_review";
 
 const PROGRESS_STAGES = [
-  "검색 lane 실행 중",
+  "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
   "공식·사업체 계정 제거 중",
   "일본 타깃·한국 접점 확인 중",
-  "Supabase 중복 확인 중",
-  "유력 후보 정렬 중",
+  "기존 후보 중복 제거 중",
+  "신규 후보 저장 중",
 ];
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
-  const [targetCount, setTargetCount] = useState(120);
+  const [targetCount, setTargetCount] = useState(50);
   const [health, setHealth] = useState<Health | null>(null);
   const [result, setResult] = useState<DiscoveryResponse | null>(null);
+  const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
@@ -36,6 +41,31 @@ export function DiscoveryConsole() {
       .then(({ payload }) => setHealth(payload))
       .catch(() => setHealth(null));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setListLoading(true);
+    setResult(null);
+    setStatusFilter("all");
+
+    fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as CandidateListResponse & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
+        if (!cancelled) setCandidates(payload.candidates);
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setCandidates([]);
+          setToast({ kind: "error", message: caught instanceof Error ? caught.message : "누적 후보 조회 실패" });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setListLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [category]);
 
   useEffect(() => {
     if (!loading) return;
@@ -52,6 +82,21 @@ export function DiscoveryConsole() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const filteredCandidates = useMemo(() => {
+    if (statusFilter === "all") return candidates;
+    return candidates.filter((candidate) => candidate.candidateStatus === statusFilter);
+  }, [candidates, statusFilter]);
+
+  const qualifiedTotal = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified").length;
+  const reviewTotal = candidates.filter((candidate) => candidate.candidateStatus === "needs_review").length;
+
+  async function reloadCandidates(targetCategory: SearchCategory) {
+    const response = await fetch(`/api/candidates?category=${targetCategory}`, { cache: "no-store" });
+    const payload = await response.json() as CandidateListResponse & { error?: string };
+    if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
+    setCandidates(payload.candidates);
+  }
+
   async function runDiscovery() {
     setLoading(true);
     setError(null);
@@ -62,12 +107,13 @@ export function DiscoveryConsole() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ category, targetCount }),
       });
-      const payload = await response.json();
+      const payload = await response.json() as DiscoveryResponse & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "검색에 실패했습니다.");
       setResult(payload);
+      await reloadCandidates(category);
       setToast({
         kind: "success",
-        message: `유력 ${payload.qualifiedCount}명 · 검토 ${payload.reviewCount}명 확보`,
+        message: `${payload.runNo}차 검색 · 신규 ${payload.candidates.length}명 추가`,
       });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "검색에 실패했습니다.";
@@ -75,6 +121,21 @@ export function DiscoveryConsole() {
       setToast({ kind: "error", message });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function copyVerificationPrompt() {
+    const batch = filteredCandidates.filter((candidate) => candidate.verificationStatus === "needs_instagram").slice(0, 30);
+    if (!batch.length) {
+      setToast({ kind: "error", message: "현재 필터에 검증할 후보가 없습니다." });
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(buildOpenCodeVerificationPrompt(batch, category));
+      setToast({ kind: "success", message: `OpenCode 검증 프롬프트 ${batch.length}명 복사 완료` });
+    } catch {
+      setToast({ kind: "error", message: "클립보드 복사에 실패했습니다." });
     }
   }
 
@@ -87,16 +148,16 @@ export function DiscoveryConsole() {
             <button className={category === "food" ? "active" : ""} onClick={() => setCategory("food")}>🍜 맛집</button>
           </div>
           <div className="field">
-            <label htmlFor="target">목표 후보</label>
+            <label htmlFor="target">이번 추가 목표</label>
             <input id="target" type="number" min={10} max={300} value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} />
           </div>
-          <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : "후보 찾기"}</button>
+          <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
         </div>
 
         <div className="provider-line">
           <Provider label="Exa" on={Boolean(health?.providers.exa)} />
           <Provider label="Tavily" on={Boolean(health?.providers.tavily)} />
-          <Provider label="Supabase 중복검사" on={Boolean(health?.providers.supabase)} />
+          <Provider label="Supabase 누적·중복" on={Boolean(health?.providers.supabase)} />
           <Provider label="품질 규칙" on={Boolean(health?.quality?.ok)} />
         </div>
 
@@ -107,17 +168,26 @@ export function DiscoveryConsole() {
           </div>
         )}
 
-        <div className="notice">검색 결과를 바로 후보로 올리지 않습니다. URL 정화 → 개인 Creator 필터 → 일본 타깃·한국 접점 확인을 통과한 계정부터 표시합니다. 팔로워와 Reels는 Instagram 실측 단계에서 채웁니다.</div>
         {health && !health.quality?.ok && <div className="notice error">품질 규칙 자체 점검 실패: {health.quality?.failures.join(", ")}</div>}
         {error && <div className="notice error">{error}</div>}
       </section>
 
       <section className="card results">
         <div className="results-head">
-          <strong>발굴 결과</strong>
-          <span>{result ? `유력 ${result.qualifiedCount} · 검토 ${result.reviewCount} · 노이즈 제거 ${result.filteredNoise} · 중복 ${result.skippedDuplicates}` : "검색 전"}</span>
+          <div className="results-summary">
+            <strong>누적 후보</strong>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검토 ${reviewTotal}${result ? ` · 이번 +${result.candidates.length}` : ""}`}</span>
+          </div>
+          <div className="results-actions">
+            <div className="mini-segment" aria-label="상태 필터">
+              <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>전체</button>
+              <button className={statusFilter === "search_qualified" ? "active" : ""} onClick={() => setStatusFilter("search_qualified")}>유력</button>
+              <button className={statusFilter === "needs_review" ? "active" : ""} onClick={() => setStatusFilter("needs_review")}>검토</button>
+            </div>
+            <button className="secondary" onClick={copyVerificationPrompt} disabled={!filteredCandidates.length}>OpenCode 검증 프롬프트 복사</button>
+          </div>
         </div>
-        {result?.candidates.length ? <CandidateTable candidates={result.candidates} /> : <div className="empty">검색하면 여기서 바로 프로필과 근거를 검증할 수 있습니다.</div>}
+        {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
 
       {toast && <div className={`toast ${toast.kind}`}>{toast.message}</div>}
@@ -133,7 +203,7 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>Instagram</th><th>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>주의 신호</th><th>검증</th></tr></thead>
+        <thead><tr><th>Instagram</th><th>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>주의</th><th>검증</th></tr></thead>
         <tbody>
           {candidates.map((candidate) => (
             <tr key={candidate.handle} className={candidate.candidateStatus === "needs_review" ? "review-row" : ""}>
@@ -143,20 +213,21 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
                   {candidate.candidateStatus === "search_qualified" ? "유력" : "검토 필요"}
                 </span>
               </td>
+              <td className="status">{metricLabel(candidate)}</td>
+              <td><div className="evidence-one-line" title={candidate.evidenceText}>{candidate.evidenceText || "프로필 확인 필요"}</div></td>
+              <td><div className="flag-one-line" title={candidate.flags.join(" · ")}>{candidate.flags.length ? candidate.flags.join(" · ") : "-"}</div></td>
               <td className="status">Instagram 실측 대기</td>
-              <td className="evidence">
-                {candidate.evidenceText || "검색 결과에서 프로필 확인"}
-                <div className="signal-line">
-                  {[...candidate.targetSignals, ...candidate.koreaSignals].slice(0, 4).map((signal) => <span className="signal" key={signal}>{signal}</span>)}
-                </div>
-                <a className="link" href={candidate.evidenceUrl} target="_blank" rel="noreferrer">근거 열기 ↗</a>
-              </td>
-              <td>{candidate.flags.length ? candidate.flags.map((flag) => <span className="flag" key={flag}>{flag}</span>) : "-"}</td>
-              <td className="status">{candidate.evidenceKind === "profile" ? "프로필 근거" : "게시물→프로필 확인"}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+function metricLabel(candidate: DiscoveryCandidate) {
+  if (candidate.followers === null && candidate.reelAverage === null) return "실측 대기";
+  const followers = candidate.followers === null ? "-" : candidate.followers.toLocaleString();
+  const reels = candidate.reelAverage === null ? "-" : `${candidate.reelAverage.toLocaleString()} (${candidate.reelSampleSize ?? 0})`;
+  return `${followers} / ${reels}`;
 }
