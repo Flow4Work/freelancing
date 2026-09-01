@@ -1,5 +1,5 @@
 import { FOOD_REVIEW_SIGNALS, getQueryPlan } from "./query-plan";
-import { extractInstagramCandidate, profileUrl } from "./instagram";
+import { extractInstagramCandidate, profileUrl, type InstagramCandidateExtraction } from "./instagram";
 import { assessCandidate } from "./quality";
 import { getConfiguredProviders } from "./providers";
 import type { CandidateStatus, DiscoveryCandidate, DiscoveryResponse, RawSearchResult, SearchCategory, SearchProvider } from "./types";
@@ -16,6 +16,11 @@ type CandidateBatch = {
   filteredNoise: number;
 };
 
+type ExtractedEvidence = {
+  result: RawSearchResult;
+  extraction: InstagramCandidateExtraction;
+};
+
 export async function discoverCreators({ category, targetCount }: DiscoverInput): Promise<DiscoveryResponse> {
   const providers = getConfiguredProviders();
   if (!providers.length) throw new NoSearchProvidersError();
@@ -23,63 +28,38 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   const runNo = await beginDiscoveryRun(category);
   const queries = getQueryPlan(category, runNo);
   const concurrency = clamp(Number(process.env.DISCOVERY_CONCURRENCY ?? 4), 1, 8);
-  const fresh = new Map<string, DiscoveryCandidate>();
-  const rejected = new Map<string, DiscoveryCandidate>();
-  const knownExisting = new Set<string>();
+  const rawResults: RawSearchResult[] = [];
   const warnings: string[] = [];
-  let skippedDuplicates = 0;
-  let filteredNoise = 0;
   let queriesRun = 0;
 
-  // Every run uses a persisted query expansion lane. Existing qualified/reviewed/rejected
-  // handles are blocked by Supabase, so repeated searches add only unseen candidates.
   for (let offset = 0; offset < queries.length; offset += concurrency) {
     const wave = queries.slice(offset, offset + concurrency);
     const settled = await Promise.allSettled(
       wave.map((query, index) => searchWithFallback(query, providers, (offset + index) % providers.length)),
     );
     queriesRun += wave.length;
-
-    const raw = settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-    const batch = rawToCandidates(raw, category);
-    filteredNoise += batch.filteredNoise;
-
-    const lookupHandles = [...new Set(
-      batch.candidates
-        .map((candidate) => candidate.handle)
-        .filter((handle) => !knownExisting.has(handle) && !fresh.has(handle) && !rejected.has(handle)),
-    )];
-
-    const existing = await findExistingHandles(lookupHandles);
-    existing.forEach((handle) => knownExisting.add(handle));
-    skippedDuplicates += existing.size;
-
-    for (const candidate of batch.candidates) {
-      if (knownExisting.has(candidate.handle)) continue;
-
-      if (candidate.candidateStatus === "hard_reject") {
-        if (!rejected.has(candidate.handle)) filteredNoise += 1;
-        fresh.delete(candidate.handle);
-        rejected.set(candidate.handle, candidate);
-        continue;
-      }
-
-      if (rejected.has(candidate.handle)) continue;
-      const previous = fresh.get(candidate.handle);
-      if (!previous || isBetterEvidence(candidate, previous)) fresh.set(candidate.handle, candidate);
-    }
+    rawResults.push(...settled.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
 
-  await saveCandidates([...fresh.values(), ...rejected.values()]);
+  // 중요한 차이: 검색 결과 한 건씩 판정하지 않는다. 같은 handle의 Exa/Tavily/여러
+  // query 근거를 먼저 합친 다음 일본 타깃·한국 접점·장르·개인 creator 여부를 판정한다.
+  const batch = rawToCandidates(rawResults, category);
+  const existing = await findExistingHandles(batch.candidates.map((candidate) => candidate.handle));
+  const fresh = batch.candidates.filter((candidate) => !existing.has(candidate.handle));
+  const rejected = fresh.filter((candidate) => candidate.candidateStatus === "hard_reject");
+  const viable = fresh.filter((candidate) => candidate.candidateStatus !== "hard_reject");
 
-  const ranked = [...fresh.values()].sort(compareCandidates);
+  await saveCandidates(fresh);
+
+  const ranked = viable.sort(compareCandidates);
   const candidates = ranked.slice(0, targetCount);
   const qualifiedCount = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified").length;
   const reviewCount = candidates.filter((candidate) => candidate.candidateStatus === "needs_review").length;
+  const filteredNoise = batch.filteredNoise + rejected.length;
 
   if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 중복 기록은 저장되지 않습니다.");
-  if (candidates.length < targetCount) warnings.push(`이번 검색에서는 신규 ${candidates.length}명만 확보했습니다. 기존 후보를 재사용하지 않고 다음 검색 lane으로 이어갑니다.`);
-  if (reviewCount > 0) warnings.push(`${reviewCount}명은 일본 타깃·한국 접점·장르 중 일부 근거가 약해 Instagram 원본 확인이 필요합니다.`);
+  if (candidates.length < targetCount) warnings.push(`이번 검색에서는 신규 ${candidates.length}명만 확보했습니다. 다음 검색 lane에서 이어서 찾습니다.`);
+  if (reviewCount > 0) warnings.push(`${reviewCount}명은 Instagram 원본 검증에서 부족한 근거를 확인해야 합니다.`);
 
   return {
     category,
@@ -89,7 +69,7 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
     qualifiedCount,
     reviewCount,
     filteredNoise,
-    skippedDuplicates,
+    skippedDuplicates: existing.size,
     queriesRun,
     providersUsed: providers.map((provider) => provider.name),
     warnings,
@@ -112,7 +92,7 @@ async function searchWithFallback(query: string, providers: SearchProvider[], st
 
 function rawToCandidates(results: RawSearchResult[], category: SearchCategory): CandidateBatch {
   const now = new Date().toISOString();
-  const candidates: DiscoveryCandidate[] = [];
+  const grouped = new Map<string, ExtractedEvidence[]>();
   let filteredNoise = 0;
 
   for (const result of results) {
@@ -121,37 +101,61 @@ function rawToCandidates(results: RawSearchResult[], category: SearchCategory): 
       filteredNoise += 1;
       continue;
     }
+    const current = grouped.get(extraction.handle) ?? [];
+    current.push({ result, extraction });
+    grouped.set(extraction.handle, current);
+  }
+
+  const candidates: DiscoveryCandidate[] = [];
+
+  for (const [handle, evidence] of grouped) {
+    const profileEvidence = evidence.filter((item) => item.extraction.evidenceKind === "profile");
+    const evidenceKind = profileEvidence.length ? "profile" : "content";
+    const primary = profileEvidence[0] ?? evidence[0];
+    const combinedText = joinEvidence(evidence.map((item) => `${item.result.title}\n${item.result.text}`), 2400);
+    const profileText = joinEvidence(profileEvidence.map((item) => `${item.result.title}\n${item.result.text}`), 1600);
 
     const assessment = assessCandidate({
-      handle: extraction.handle,
-      evidenceKind: extraction.evidenceKind,
-      title: result.title,
-      text: result.text,
+      handle,
+      evidenceKind,
+      title: "",
+      text: combinedText,
+      profileText,
       category,
     });
 
     const foodFlags = category === "food"
-      ? FOOD_REVIEW_SIGNALS.filter((signal) => `${result.title}\n${result.text}`.toLowerCase().includes(signal.toLowerCase())).map((signal) => `제외검토:${signal}`)
+      ? FOOD_REVIEW_SIGNALS
+          .filter((signal) => combinedText.toLowerCase().includes(signal.toLowerCase()))
+          .map((signal) => `제외검토:${signal}`)
       : [];
 
     candidates.push({
-      handle: extraction.handle,
-      profileUrl: profileUrl(extraction.handle),
+      handle,
+      profileUrl: profileUrl(handle),
       category,
-      sourceProvider: result.provider,
-      evidenceUrl: result.url,
-      evidenceText: evidenceText(result),
-      evidenceKind: extraction.evidenceKind,
+      sourceProvider: primary.result.provider,
+      evidenceUrl: primary.result.url,
+      evidenceText: combinedText.slice(0, 1200),
+      evidenceKind,
       candidateStatus: assessment.candidateStatus,
       targetSignals: assessment.targetSignals,
       koreaSignals: assessment.koreaSignals,
       rejectReasons: assessment.rejectReasons,
-      flags: [...assessment.flags, ...foodFlags],
+      flags: [...new Set([...assessment.flags, ...foodFlags])],
+      bio: null,
       followers: null,
       reelAverage: null,
       reelMedian: null,
       reelSampleSize: null,
+      reelCheckedCount: null,
+      reelTotalConsidered: null,
+      reelMetricsStatus: "not_checked",
+      reelViews: [],
+      lastActivityAt: null,
+      verificationNote: null,
       verificationStatus: assessment.candidateStatus === "hard_reject" ? "hard_reject" : "needs_instagram",
+      verifiedAt: null,
       discoveredAt: now,
     });
   }
@@ -159,27 +163,17 @@ function rawToCandidates(results: RawSearchResult[], category: SearchCategory): 
   return { candidates, filteredNoise };
 }
 
-function evidenceText(result: RawSearchResult) {
-  const text = cleanText(result.text);
-  const title = cleanText(result.title);
-  return (text.length >= 20 ? text : title).slice(0, 360);
+function joinEvidence(values: string[], maxLength: number) {
+  const unique = [...new Set(values.map(cleanText).filter((value) => value.length >= 2))];
+  return unique.join("\n").slice(0, maxLength);
 }
 
 function cleanText(value: string) {
   return value
     .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, "")
-    .replace(/!\[[^\]]*\]\(\s*\)/g, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function isBetterEvidence(next: DiscoveryCandidate, previous: DiscoveryCandidate) {
-  const statusRank: Record<CandidateStatus, number> = { hard_reject: 0, needs_review: 1, search_qualified: 2 };
-  if (statusRank[next.candidateStatus] !== statusRank[previous.candidateStatus]) {
-    return statusRank[next.candidateStatus] > statusRank[previous.candidateStatus];
-  }
-  if (next.evidenceKind !== previous.evidenceKind) return next.evidenceKind === "profile";
-  return next.evidenceText.length > previous.evidenceText.length;
 }
 
 function compareCandidates(a: DiscoveryCandidate, b: DiscoveryCandidate) {
