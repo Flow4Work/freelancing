@@ -11,7 +11,7 @@ type Health = {
 };
 
 type Toast = { kind: "success" | "error"; message: string } | null;
-type StatusFilter = "all" | CandidateViewState;
+type StatusFilter = "all" | "verification_needed" | "recommended" | "duplicate_passed";
 type AutomationMode = "duplicate" | "instagram";
 
 type AutomationRunResponse = {
@@ -31,6 +31,8 @@ const PROGRESS_STAGES = [
   "신규/보강 후보 저장 중",
 ];
 
+const RECOMMENDED_BADGE_STYLE = { color: "#d6336c", background: "#fff0f6" };
+
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
   const [targetCount, setTargetCount] = useState(50);
@@ -38,7 +40,6 @@ export function DiscoveryConsole() {
   const [result, setResult] = useState<DiscoveryResponse | null>(null);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [finalVerificationHandles, setFinalVerificationHandles] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [automationLoading, setAutomationLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
@@ -59,7 +60,6 @@ export function DiscoveryConsole() {
     setListLoading(true);
     setResult(null);
     setStatusFilter("all");
-    setFinalVerificationHandles(new Set());
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -85,7 +85,6 @@ export function DiscoveryConsole() {
     const timer = window.setInterval(async () => {
       if (Date.now() > automationWatchUntil) {
         setAutomationWatchUntil(null);
-        setFinalVerificationHandles(new Set());
         return;
       }
       try {
@@ -123,16 +122,13 @@ export function DiscoveryConsole() {
     ) {
       return "unmapped";
     }
-    if (state === "duplicate_passed" && finalVerificationHandles.has(candidate.handle)) {
-      return "final_verification";
-    }
     return state;
   }
 
   const filteredCandidates = useMemo(() => {
     if (statusFilter === "all") return candidates;
     return candidates.filter((candidate) => candidateState(candidate) === statusFilter);
-  }, [candidates, statusFilter, finalVerificationHandles]);
+  }, [candidates, statusFilter]);
 
   const verificationNeededTotal = candidates.filter((candidate) => candidateState(candidate) === "verification_needed").length;
   const recommendedTotal = candidates.filter((candidate) => candidateState(candidate) === "recommended").length;
@@ -151,15 +147,6 @@ export function DiscoveryConsole() {
     const payload = await response.json() as CandidateListResponse & { error?: string };
     if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
     setCandidates(payload.candidates);
-    setFinalVerificationHandles((current) => {
-      if (!current.size) return current;
-      const stillPending = new Set(
-        payload.candidates
-          .filter((candidate) => current.has(candidate.handle) && getCandidateViewState(candidate) === "duplicate_passed")
-          .map((candidate) => candidate.handle),
-      );
-      return stillPending.size === current.size ? current : stillPending;
-    });
   }
 
   async function runDiscovery() {
@@ -204,10 +191,6 @@ export function DiscoveryConsole() {
       const payload = await response.json() as AutomationRunResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "OpenCode 자동 실행 실패");
 
-      if (mode === "instagram") {
-        setFinalVerificationHandles(new Set(handles));
-        setStatusFilter("final_verification");
-      }
       setAutomationWatchUntil(Date.now() + 10 * 60 * 1000);
       setToast({
         kind: "success",
@@ -266,8 +249,6 @@ export function DiscoveryConsole() {
               <button className={statusFilter === "verification_needed" ? "active" : ""} onClick={() => setStatusFilter("verification_needed")}>검증 필요</button>
               <button className={statusFilter === "recommended" ? "active" : ""} onClick={() => setStatusFilter("recommended")}>추천 후보</button>
               <button className={statusFilter === "duplicate_passed" ? "active" : ""} onClick={() => setStatusFilter("duplicate_passed")}>중복 통과</button>
-              <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증</button>
-              <button className={statusFilter === "dm_ready" ? "active" : ""} onClick={() => setStatusFilter("dm_ready")}>DM 준비</button>
             </div>
             {action && (
               <button
@@ -304,7 +285,7 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
-                <td><span className={`candidate-state ${stateTone(state)}`}>{stateLabel(state, candidate)}</span></td>
+                <td><CandidateStateBadges state={state} candidate={candidate} /></td>
                 <td className="status">{metricLabel(candidate)}</td>
                 <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
@@ -318,21 +299,34 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
   );
 }
 
-function stateLabel(state: CandidateViewState, candidate: DiscoveryCandidate) {
+function CandidateStateBadges({ state, candidate }: { state: CandidateViewState; candidate: DiscoveryCandidate }) {
+  const source = state === "duplicate_passed" ? duplicateSourceBadge(candidate) : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
+      <span className={`candidate-state ${stateTone(state)}`} style={state === "recommended" ? RECOMMENDED_BADGE_STYLE : undefined}>{stateLabel(state)}</span>
+      {source && <span className={`candidate-state ${source.tone}`} style={source.tone === "recommended" ? RECOMMENDED_BADGE_STYLE : undefined}>{source.label}</span>}
+    </div>
+  );
+}
+
+function duplicateSourceBadge(candidate: DiscoveryCandidate) {
+  if (candidate.candidateStatus === "search_qualified") return { label: "추천 후보", tone: "recommended" };
+  if (candidate.candidateStatus === "needs_review") return { label: "검증 필요", tone: "review" };
+  return null;
+}
+
+function stateLabel(state: CandidateViewState) {
   if (state === "verification_needed") return "검증 필요";
   if (state === "recommended") return "추천 후보";
-  if (state === "duplicate_passed") {
-    if (candidate.candidateStatus === "search_qualified") return "중복 통과 · 추천 후보";
-    if (candidate.candidateStatus === "needs_review") return "중복 통과 · 검증 필요";
-    return "중복 통과";
-  }
+  if (state === "duplicate_passed") return "중복 통과";
   if (state === "final_verification") return "최종 검증";
   if (state === "dm_ready") return "DM 준비";
   return "기존 상태";
 }
 
 function stateTone(state: CandidateViewState) {
-  if (state === "recommended" || state === "dm_ready") return "qualified";
+  if (state === "recommended") return "recommended";
+  if (state === "dm_ready") return "qualified";
   if (state === "duplicate_passed" || state === "final_verification") return "priority";
   return "review";
 }
