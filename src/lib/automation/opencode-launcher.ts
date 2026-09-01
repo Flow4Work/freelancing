@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
 
+let lastSuccessfulPreflightAt = 0;
+const PREFLIGHT_CACHE_MS = 2 * 60 * 1000;
+
 export function assertLocalRequest(request: Request) {
   const hostname = new URL(request.url).hostname.toLowerCase();
   if (!["localhost", "127.0.0.1", "::1"].includes(hostname)) {
@@ -24,6 +27,51 @@ export function assertOpenCodeAvailable() {
   if (check.status !== 0) {
     throw new Error(`OpenCode 명령을 찾지 못했습니다: ${command}`);
   }
+}
+
+export function assertOpenCodeRunnable() {
+  if (Date.now() - lastSuccessfulPreflightAt < PREFLIGHT_CACHE_MS) return;
+
+  const command = getOpenCodeCommand();
+  const script = `$ErrorActionPreference = "Continue"
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8
+$OutputEncoding = $Utf8
+try { chcp 65001 > $null } catch {}
+$OpenCode = ${psQuote(command)}
+$Captured = @(& $OpenCode run "Reply exactly OK." --title "FixUp Scout preflight" 2>&1)
+$Code = $LASTEXITCODE
+if ($null -eq $Code) { $Code = 0 }
+$Captured | ForEach-Object { [Console]::Out.WriteLine([string]$_) }
+exit $Code
+`;
+
+  const check = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-Command", script],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 60_000,
+      maxBuffer: 2 * 1024 * 1024,
+    },
+  );
+
+  if (check.error) {
+    const code = "code" in check.error ? String(check.error.code ?? "") : "";
+    if (code === "ETIMEDOUT") {
+      throw new Error("OpenCode 사용 가능 확인이 60초 안에 끝나지 않았습니다. 현재 모델/provider 응답 지연 또는 장애입니다.");
+    }
+    throw new Error(`OpenCode 사용 가능 확인 실패: ${check.error.message}`);
+  }
+
+  if (check.status !== 0) {
+    const detail = cleanOpenCodeOutput([check.stdout, check.stderr].filter(Boolean).join("\n"));
+    throw new Error(`OpenCode 실제 호출 실패${detail ? `: ${detail}` : ` (종료 코드 ${check.status ?? "unknown"})`}`);
+  }
+
+  lastSuccessfulPreflightAt = Date.now();
 }
 
 export async function launchOpenCodeJob(input: { prompt: string; jobId: string; title: string }) {
@@ -73,10 +121,20 @@ try {
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile
+  $Captured = New-Object System.Collections.Generic.List[string]
+  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile 2>&1 | ForEach-Object {
+    $Line = [string]$_
+    [void]$Captured.Add($Line)
+    Write-Host $Line
+  }
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
   if ($Code -ne 0) {
+    $Detail = ($Captured -join "`n").Trim()
+    if ($Detail.Length -gt 3500) { $Detail = $Detail.Substring($Detail.Length - 3500) }
+    if ($Detail) {
+      throw "OpenCode가 종료 코드 $Code 로 끝났습니다.`n$Detail"
+    }
     throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
   }
 
@@ -140,9 +198,12 @@ async function waitForOpenCodeInvocation(invokedPath: string, failedPath: string
 
     const invoked = await readTextIfPresent(invokedPath);
     if (invoked === "invoked") {
-      await sleep(300);
-      const immediateFailure = await readTextIfPresent(failedPath);
-      if (immediateFailure) throw new Error(`OpenCode 실행 실패: ${immediateFailure}`);
+      const immediateFailureDeadline = Date.now() + 4000;
+      while (Date.now() < immediateFailureDeadline) {
+        const immediateFailure = await readTextIfPresent(failedPath);
+        if (immediateFailure) throw new Error(`OpenCode 실행 실패: ${immediateFailure}`);
+        await sleep(200);
+      }
       return;
     }
 
@@ -160,6 +221,16 @@ async function readTextIfPresent(filePath: string) {
   } catch {
     return null;
   }
+}
+
+function cleanOpenCodeOutput(value: string) {
+  const cleaned = value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "")
+    .trim();
+  if (!cleaned) return "";
+  const lines = cleaned.split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.slice(-12).join(" | ").slice(-2200);
 }
 
 function sleep(ms: number) {
