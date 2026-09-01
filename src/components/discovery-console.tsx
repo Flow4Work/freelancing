@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getCandidateViewState, type CandidateViewState } from "@/lib/discovery/presentation";
+import { getCandidateViewState, getSearchStageViewState, type CandidateViewState } from "@/lib/discovery/presentation";
 import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
 
 type Health = {
@@ -44,8 +44,8 @@ type AutomationHistoryResponse = {
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
+  "계정 생존 확인 중",
   "계정별 검색 근거 합치는 중",
-  "공식·사업체 계정 제거 중",
   "일본 타깃·한국 접점 확인 중",
   "신규/보강 후보 저장 중",
 ];
@@ -137,29 +137,25 @@ export function DiscoveryConsole() {
   }, [toast]);
 
   function candidateState(candidate: DiscoveryCandidate): CandidateViewState {
-    const state = getCandidateViewState(candidate);
-    if (
-      state === "verification_needed"
-      && (
-        candidate.evidenceKind !== "profile"
-        || candidate.flags.includes("개인 Creator 근거 추가확인")
-      )
-    ) {
-      return "unmapped";
-    }
-    return state;
+    return getCandidateViewState(candidate);
   }
 
+  const visibleCandidates = useMemo(
+    () => candidates.filter((candidate) => candidateState(candidate) !== "unmapped"),
+    [candidates],
+  );
+
   const filteredCandidates = useMemo(() => {
-    if (statusFilter === "all") return candidates;
-    return candidates.filter((candidate) => candidateState(candidate) === statusFilter);
-  }, [candidates, statusFilter]);
+    if (statusFilter === "all") return visibleCandidates;
+    return visibleCandidates.filter((candidate) => candidateState(candidate) === statusFilter);
+  }, [visibleCandidates, statusFilter]);
 
   const verificationNeededTotal = candidates.filter((candidate) => candidateState(candidate) === "verification_needed").length;
   const recommendedTotal = candidates.filter((candidate) => candidateState(candidate) === "recommended").length;
   const duplicatePassedTotal = candidates.filter((candidate) => candidateState(candidate) === "duplicate_passed").length;
   const finalVerificationTotal = candidates.filter((candidate) => candidateState(candidate) === "final_verification").length;
   const dmReadyTotal = candidates.filter((candidate) => candidateState(candidate) === "dm_ready").length;
+  const excludedTotal = candidates.length - visibleCandidates.length;
 
   const action = statusFilter === "verification_needed" || statusFilter === "recommended"
     ? { mode: "duplicate" as const, label: "중복 확인 실행" }
@@ -298,7 +294,7 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 제외 ${excludedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
@@ -344,12 +340,13 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
         <tbody>
           {candidates.map((candidate) => {
             const state = getState(candidate);
+            const summary = evidenceSummary(candidate);
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
                 <td><CandidateStateBadges state={state} candidate={candidate} /></td>
                 <td className="status">{metricLabel(candidate)}</td>
-                <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
+                <td><div className="evidence-one-line" title={summary}>{summary}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
                 <td className="status">{verificationLabel(candidate)}</td>
               </tr>
@@ -379,8 +376,9 @@ function CandidateStateBadges({ state, candidate }: { state: CandidateViewState;
 }
 
 function duplicateSourceBadge(candidate: DiscoveryCandidate) {
-  if (candidate.candidateStatus === "search_qualified") return { label: "추천 후보", tone: "recommended" };
-  if (candidate.candidateStatus === "needs_review") return { label: "검증 필요", tone: "review" };
+  const sourceState = getSearchStageViewState(candidate);
+  if (sourceState === "recommended") return { label: "추천 후보", tone: "recommended" };
+  if (sourceState === "verification_needed") return { label: "검증 필요", tone: "review" };
   return null;
 }
 
@@ -415,14 +413,38 @@ function stateTone(state: CandidateViewState) {
 }
 
 function evidenceSummary(candidate: DiscoveryCandidate) {
-  if (candidate.verificationNote) return candidate.verificationNote;
-  const topic = candidate.category === "beauty" ? "미용" : "맛집";
-  const target = candidate.targetSignals[0] ?? null;
-  const korea = candidate.koreaSignals.filter((signal) => !(target === "한국거주 일본인" && signal === "한국 거주")).slice(0, 2);
-  if (target && korea.length) return `${target} · ${korea.join("·")} · ${topic} 콘텐츠 확인`;
-  if (target) return `${target} 확인 · 한국 ${topic} 접점 추가 확인 필요`;
-  if (korea.length) return `${korea.join("·")} ${topic} 콘텐츠 확인 · 일본 타깃 여부 확인 필요`;
-  return `${topic} 후보 · Instagram 원본 확인 필요`;
+  return `${koreaEvidenceLabel(candidate)} · ${contentFitLabel(candidate)} · ${coreDecisionLabel(candidate)}`;
+}
+
+function koreaEvidenceLabel(candidate: DiscoveryCandidate) {
+  if (candidate.koreaAffinity === "none") return "한국 접점 없음";
+  if (candidate.koreaAffinity === "unknown") return "한국 접점 미확인";
+  if (candidate.targetSignals.includes("일한 배경")) return "한일부부/한일 배경";
+  if (candidate.koreaSignals.includes("한국 거주")) return "한국 거주";
+  if (candidate.koreaSignals.includes("방한")) return candidate.koreaAffinity === "strong" ? "반복 방한" : "한국 방문 확인";
+  if (candidate.koreaSignals.includes("한국 여행")) return "한국 방문 확인";
+  return candidate.koreaAffinity === "strong" ? "한국 접점 강함" : "한국 접점 확인";
+}
+
+function contentFitLabel(candidate: DiscoveryCandidate) {
+  if (candidate.contentFit === "beauty") return "뷰티";
+  if (candidate.contentFit === "food") return "맛집";
+  if (candidate.contentFit === "korea_travel") return "한국 여행";
+  if (candidate.contentFit === "lifestyle") return "라이프";
+  return "콘텐츠 미확인";
+}
+
+function coreDecisionLabel(candidate: DiscoveryCandidate) {
+  if (candidate.accountAvailability === "unavailable") return "계정 없음";
+  if (candidate.accountAvailability === "unknown") return "계정 존재 추가 확인";
+  if (candidate.accountType === "business") return "개인 KOL 아님";
+  if (candidate.accountType === "unknown") return "개인 크리에이터 여부 확인 필요";
+  if (candidate.koreaAffinity === "none") return "한국 접점 없음";
+  if (candidate.koreaAffinity === "unknown") return "한국 접점 추가 검증 필요";
+  if (candidate.eligibility === "fail") return "현재 후보 조건 부적합";
+  if (candidate.contentFit !== candidate.category) return `${candidate.category === "beauty" ? "뷰티" : "맛집"} 적합성 추가 확인`;
+  if (candidate.eligibility === "possible") return candidate.category === "beauty" ? "K뷰티 콘텐츠 적합" : "한국 맛집 콘텐츠 적합";
+  return "추가 검증 필요";
 }
 
 function metricLabel(candidate: DiscoveryCandidate) {
