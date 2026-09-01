@@ -26,7 +26,7 @@ export async function POST(request: Request) {
 
     const candidates = await getAutomationCandidates(parsed.data.category, parsed.data.handles, parsed.data.mode);
     if (!candidates.length) {
-      const label = parsed.data.mode === "duplicate" ? "검증 필요/추천 후보" : "중복 통과";
+      const label = parsed.data.mode === "duplicate" ? "유력" : "검증 우선";
       return NextResponse.json({ ok: false, error: `${label} 상태에서 실행할 후보가 없습니다.` }, { status: 409 });
     }
 
