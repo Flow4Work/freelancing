@@ -197,13 +197,13 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   const rows = candidates
     .filter((candidate) => !contacted.has(candidate.handle))
     .map((candidate) => ({
-      handle: candidate.handle,
-      normalized_handle: candidate.handle,
-      profile_url: candidate.profileUrl,
+      handle: sanitizeDbText(candidate.handle),
+      normalized_handle: sanitizeDbText(candidate.handle),
+      profile_url: sanitizeDbText(candidate.profileUrl),
       category: candidate.category,
       source_provider: candidate.sourceProvider,
-      evidence_url: candidate.evidenceUrl,
-      evidence_text: candidate.evidenceText,
+      evidence_url: sanitizeDbText(candidate.evidenceUrl),
+      evidence_text: sanitizeDbText(candidate.evidenceText),
       evidence_kind: candidate.evidenceKind,
       account_availability: candidate.accountAvailability,
       account_type: candidate.accountType,
@@ -211,9 +211,11 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
       content_fit: candidate.contentFit,
       eligibility: candidate.eligibility,
       activity: candidate.activity,
-      target_signals: candidate.targetSignals,
-      korea_signals: candidate.koreaSignals,
-      flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)],
+      target_signals: candidate.targetSignals.map(sanitizeDbText).filter(Boolean),
+      korea_signals: candidate.koreaSignals.map(sanitizeDbText).filter(Boolean),
+      flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)]
+        .map(sanitizeDbText)
+        .filter(Boolean),
       verification_status: candidate.verificationStatus,
       discovery_status: candidate.candidateStatus,
       last_seen_at: candidate.discoveredAt,
@@ -222,9 +224,30 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   if (!rows.length) return;
 
   const { error } = await supabase.from("creator_candidates").upsert(rows, { onConflict: "normalized_handle" });
-  if (error) {
-    console.error("supabase_candidate_save_failed", error.message);
+  if (!error) return;
+
+  console.error("supabase_candidate_save_failed", error.message);
+  if (!isJsonPayloadError(error.message)) {
     throw new Error(`후보 저장 실패: ${error.message}`);
+  }
+
+  // 외부 검색 결과 한 행의 비정상 Unicode가 전체 후보 저장을 막지 않게 격리한다.
+  const failedHandles: string[] = [];
+  for (const row of rows) {
+    const { error: rowError } = await supabase
+      .from("creator_candidates")
+      .upsert(row, { onConflict: "normalized_handle" });
+    if (rowError) {
+      failedHandles.push(row.normalized_handle);
+      console.error("supabase_candidate_row_save_failed", { handle: row.normalized_handle, error: rowError.message });
+    }
+  }
+
+  if (failedHandles.length === rows.length) {
+    throw new Error(`후보 저장 실패: ${error.message}`);
+  }
+  if (failedHandles.length) {
+    console.warn("supabase_candidate_rows_skipped", failedHandles);
   }
 }
 
@@ -268,6 +291,25 @@ function mergeEvidenceText(first: string, second: string, maxLength = 2400) {
   return [...new Set([first, second].map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean))]
     .join("\n")
     .slice(0, maxLength);
+}
+
+function sanitizeDbText(value: string) {
+  let sanitized = "";
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0 || (codePoint >= 0xd800 && codePoint <= 0xdfff)) continue;
+    if (codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d) {
+      sanitized += " ";
+      continue;
+    }
+    sanitized += char;
+  }
+  return sanitized.replace(/[\t\r\n ]+/g, " ").trim();
+}
+
+function isJsonPayloadError(message: string) {
+  return message.includes("invalid input syntax for type json")
+    || message.includes("unsupported Unicode escape sequence");
 }
 
 function stringArray(value: unknown) {
