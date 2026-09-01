@@ -80,9 +80,9 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     return "unmapped";
   }
 
-  // 중복 검사를 아직 통과하지 못한 후보는 후보 찾기 단계의 의미만 유지한다.
-  if (duplicateStatus === "not_checked" || duplicateStatus === "unknown") {
-    if (discoveryStatus === "search_qualified" || discoveryStatus === "qualified") {
+  // 중복 검사 전 단계는 기존 저장 의미가 명확한 정상 조합만 매핑한다.
+  if ((duplicateStatus === "not_checked" || duplicateStatus === "unknown") && verificationStatus === "needs_instagram") {
+    if (discoveryStatus === "search_qualified") {
       return "recommended";
     }
 
