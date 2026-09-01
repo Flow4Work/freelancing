@@ -33,6 +33,7 @@ export type DiscoveryCandidate = {
 export type DiscoveryResponse = {
   category: SearchCategory;
   targetCount: number;
+  runNo: number;
   candidates: DiscoveryCandidate[];
   qualifiedCount: number;
   reviewCount: number;
@@ -41,6 +42,11 @@ export type DiscoveryResponse = {
   queriesRun: number;
   providersUsed: SearchProviderName[];
   warnings: string[];
+};
+
+export type CandidateListResponse = {
+  category: SearchCategory;
+  candidates: DiscoveryCandidate[];
 };
 
 export interface SearchProvider {
