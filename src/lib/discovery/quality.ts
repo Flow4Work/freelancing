@@ -36,6 +36,15 @@ const PROFILE_AGGREGATOR_PATTERNS = [
   /(?:まとめ|キュレーション).{0,8}(?:アカウント|メディア)/i,
 ];
 
+const PERSONAL_CREATOR_PATTERNS = [
+  /(?:会社員|OL|ママ|mama|主婦|学生|留学生|ワーホリ)/i,
+  /(?:ひとり旅|一人旅|旅行好き|韓国好き|コスメ好き|美容好き|オタク)/i,
+  /(?:クリエイター|インフルエンサー|ブロガー|美容家|ライター|VLOG)/i,
+  /(?:在韓|韓国在住|日本人|日韓夫婦|日韓ハーフ)/i,
+  /\d{2,3}\s*cm/i,
+  /\d{2}\s*代/i,
+];
+
 const JAPAN_IDENTITY_PATTERNS: Array<[RegExp, string]> = [
   [/韓国在住.{0,10}日本人|日本人.{0,10}韓国在住/i, "한국거주 일본인"],
   [/在韓\s*\d*\s*年|在韓日本人/i, "재한 일본인"],
@@ -112,14 +121,23 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
     ? BEAUTY_PATTERNS.some((pattern) => pattern.test(combined))
     : FOOD_PATTERNS.some((pattern) => pattern.test(combined));
   const aggregatorLike = input.evidenceKind === "profile" && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(combined));
+  const personalLike = PERSONAL_CREATOR_PATTERNS.some((pattern) => pattern.test(combined));
 
   if (!targetSignals.length) flags.push("일본 타깃 근거 약함");
   if (!koreaSignals.length) flags.push("한국 접점 근거 약함");
   if (!categoryRelevant) flags.push("장르 근거 추가확인");
+  if (!personalLike) flags.push("개인 Creator 근거 추가확인");
   if (aggregatorLike) flags.push("미디어/정보계정 여부 확인");
   if (input.evidenceKind === "content") flags.push("게시물 근거·프로필 재확인");
 
-  const candidateStatus: CandidateStatus = targetSignals.length && koreaSignals.length && categoryRelevant && !aggregatorLike
+  // 게시물 검색 결과만으로는 실제 계정 유형을 확정하지 않는다.
+  // '유력'은 프로필형 근거 + 개인 creator 신호 + 일본/한국/장르 근거가 모두 있을 때만 부여한다.
+  const candidateStatus: CandidateStatus = input.evidenceKind === "profile"
+    && targetSignals.length > 0
+    && koreaSignals.length > 0
+    && categoryRelevant
+    && personalLike
+    && !aggregatorLike
     ? "search_qualified"
     : "needs_review";
 
