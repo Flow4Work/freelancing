@@ -9,8 +9,8 @@ export async function GET() {
     duplicateUrl: FIXUP_DUPLICATE_CHECK_URL,
     batchSize: AUTOMATION_BATCH_SIZE,
     modes: {
-      qualified: "유력 후보만 FixUp 중복 확인",
-      priority: "검증 우선 후보만 Instagram 원본 검증",
+      qualified: "검증 필요/추천 후보만 FixUp 중복 확인",
+      priority: "중복 통과 후보만 Instagram 원본 최종 검증",
     },
     rules: [
       "playwright_b 현재 로그인 Chrome만 사용",
