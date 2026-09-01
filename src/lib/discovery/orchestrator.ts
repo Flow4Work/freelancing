@@ -3,23 +3,15 @@ import { extractInstagramCandidate, profileUrl, type InstagramCandidateExtractio
 import { assessCandidate } from "./quality";
 import { getConfiguredProviders } from "./providers";
 import type { CandidateStatus, DiscoveryCandidate, DiscoveryResponse, RawSearchResult, SearchCategory, SearchProvider } from "./types";
-import { findExistingHandles, saveCandidates } from "@/lib/supabase/candidates";
+import { findExistingHandles, mergeWithStoredReviewEvidence, saveCandidates } from "@/lib/supabase/candidates";
 import { beginDiscoveryRun } from "@/lib/supabase/discovery-runs";
 import { isSupabaseConfigured } from "@/lib/supabase/admin";
 
 export class NoSearchProvidersError extends Error {}
 
 type DiscoverInput = { category: SearchCategory; targetCount: number };
-
-type CandidateBatch = {
-  candidates: DiscoveryCandidate[];
-  filteredNoise: number;
-};
-
-type ExtractedEvidence = {
-  result: RawSearchResult;
-  extraction: InstagramCandidateExtraction;
-};
+type CandidateBatch = { candidates: DiscoveryCandidate[]; filteredNoise: number };
+type ExtractedEvidence = { result: RawSearchResult; extraction: InstagramCandidateExtraction };
 
 export async function discoverCreators({ category, targetCount }: DiscoverInput): Promise<DiscoveryResponse> {
   const providers = getConfiguredProviders();
@@ -41,11 +33,12 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
     rawResults.push(...settled.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
 
-  // 중요한 차이: 검색 결과 한 건씩 판정하지 않는다. 같은 handle의 Exa/Tavily/여러
-  // query 근거를 먼저 합친 다음 일본 타깃·한국 접점·장르·개인 creator 여부를 판정한다.
+  // 같은 실행 안의 여러 검색 결과를 handle별로 합친 뒤, 이전 실행에서 review였던
+  // 저장 근거까지 한 번 더 합쳐 판정한다. 부족한 근거가 쌓이면 review -> 유력으로 승격된다.
   const batch = rawToCandidates(rawResults, category);
-  const existing = await findExistingHandles(batch.candidates.map((candidate) => candidate.handle));
-  const fresh = batch.candidates.filter((candidate) => !existing.has(candidate.handle));
+  const enriched = await mergeWithStoredReviewEvidence(batch.candidates, category);
+  const existing = await findExistingHandles(enriched.map((candidate) => candidate.handle));
+  const fresh = enriched.filter((candidate) => !existing.has(candidate.handle));
   const rejected = fresh.filter((candidate) => candidate.candidateStatus === "hard_reject");
   const viable = fresh.filter((candidate) => candidate.candidateStatus !== "hard_reject");
 
@@ -58,8 +51,8 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   const filteredNoise = batch.filteredNoise + rejected.length;
 
   if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 중복 기록은 저장되지 않습니다.");
-  if (candidates.length < targetCount) warnings.push(`이번 검색에서는 신규 ${candidates.length}명만 확보했습니다. 다음 검색 lane에서 이어서 찾습니다.`);
-  if (reviewCount > 0) warnings.push(`${reviewCount}명은 Instagram 원본 검증에서 부족한 근거를 확인해야 합니다.`);
+  if (candidates.length < targetCount) warnings.push(`이번 검색에서는 신규/보강 후보 ${candidates.length}명만 확보했습니다. 다음 검색 lane에서 이어서 찾습니다.`);
+  if (reviewCount > 0) warnings.push(`${reviewCount}명은 Instagram 원본 검증 또는 추가 검색 근거가 더 필요합니다.`);
 
   return {
     category,
