@@ -10,7 +10,7 @@ type Health = {
 };
 
 type Toast = { kind: "success" | "error"; message: string } | null;
-type StatusFilter = "all" | "search_qualified" | "needs_review";
+type StatusFilter = "all" | "qualified" | "search_qualified" | "needs_review";
 
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
@@ -102,12 +102,18 @@ export function DiscoveryConsole() {
 
   const filteredCandidates = useMemo(() => {
     if (statusFilter === "all") return candidates;
-    return candidates.filter((candidate) => candidate.candidateStatus === statusFilter);
+    if (statusFilter === "qualified") {
+      return candidates.filter((candidate) => candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "verified");
+    }
+    if (statusFilter === "search_qualified") {
+      return candidates.filter((candidate) => candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "needs_instagram");
+    }
+    return candidates.filter((candidate) => candidate.candidateStatus === "needs_review");
   }, [candidates, statusFilter]);
 
-  const qualifiedTotal = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified").length;
+  const qualifiedTotal = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "verified").length;
+  const priorityTotal = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "needs_instagram").length;
   const reviewTotal = candidates.filter((candidate) => candidate.candidateStatus === "needs_review").length;
-  const verifiedTotal = candidates.filter((candidate) => candidate.verificationStatus === "verified" || candidate.verificationStatus === "insufficient").length;
 
   async function reloadCandidates(targetCategory: SearchCategory) {
     const response = await fetch(`/api/candidates?category=${targetCategory}`, { cache: "no-store" });
@@ -162,7 +168,7 @@ export function DiscoveryConsole() {
 
       await navigator.clipboard.writeText(payload.prompt);
       setVerificationWatchUntil(Date.now() + 10 * 60 * 1000);
-      setToast({ kind: "success", message: `OpenCode ${payload.candidateCount}명 복사 · 결과 자동 반영 대기` });
+      setToast({ kind: "success", message: `OpenCode ${payload.candidateCount}명 복사 · 중복+Instagram 결과 자동 반영 대기` });
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "클립보드 복사 실패" });
     }
@@ -197,7 +203,7 @@ export function DiscoveryConsole() {
           </div>
         )}
 
-        {verificationWatchUntil && <div className="notice">OpenCode가 localhost로 검증 결과를 제출하면 이 화면에 자동 반영됩니다.</div>}
+        {verificationWatchUntil && <div className="notice">OpenCode가 FixUp 중복 확인 후 Instagram을 검증하고 localhost로 제출하면 자동 반영됩니다.</div>}
         {health && !health.quality?.ok && <div className="notice error">품질 규칙 자체 점검 실패: {health.quality?.failures.join(", ")}</div>}
         {error && <div className="notice error">{error}</div>}
       </section>
@@ -206,12 +212,13 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검토 ${reviewTotal} · 검증 ${verifiedTotal}${result ? ` · 이번 처리 ${result.candidates.length}` : ""}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검증 우선 ${priorityTotal} · 검토 ${reviewTotal}${result ? ` · 이번 처리 ${result.candidates.length}` : ""}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
               <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>전체</button>
-              <button className={statusFilter === "search_qualified" ? "active" : ""} onClick={() => setStatusFilter("search_qualified")}>유력</button>
+              <button className={statusFilter === "qualified" ? "active" : ""} onClick={() => setStatusFilter("qualified")}>유력</button>
+              <button className={statusFilter === "search_qualified" ? "active" : ""} onClick={() => setStatusFilter("search_qualified")}>검증 우선</button>
               <button className={statusFilter === "needs_review" ? "active" : ""} onClick={() => setStatusFilter("needs_review")}>검토</button>
             </div>
             <button className="secondary" onClick={copyVerificationPrompt} disabled={!filteredCandidates.length}>OpenCode 검증 프롬프트 복사</button>
@@ -238,7 +245,7 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
           {candidates.map((candidate) => (
             <tr key={candidate.handle} className={candidate.candidateStatus === "needs_review" ? "review-row" : ""}>
               <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
-              <td><span className={`candidate-state ${candidate.candidateStatus}`}>{candidate.candidateStatus === "search_qualified" ? "유력" : "검토 필요"}</span></td>
+              <td><span className={`candidate-state ${candidate.candidateStatus}`}>{statusLabel(candidate)}</span></td>
               <td className="status">{metricLabel(candidate)}</td>
               <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
               <td><div className="flag-one-line" title={candidate.flags.join(" · ")}>{candidate.flags.length ? candidate.flags.join(" · ") : "-"}</div></td>
@@ -249,6 +256,12 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
       </table>
     </div>
   );
+}
+
+function statusLabel(candidate: DiscoveryCandidate) {
+  if (candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "verified") return "유력";
+  if (candidate.candidateStatus === "search_qualified") return "검증 우선";
+  return "검토 필요";
 }
 
 function evidenceSummary(candidate: DiscoveryCandidate) {
@@ -272,7 +285,11 @@ function metricLabel(candidate: DiscoveryCandidate) {
 }
 
 function verificationLabel(candidate: DiscoveryCandidate) {
-  if (candidate.verificationStatus === "verified") return "Instagram 검증 완료";
-  if (candidate.verificationStatus === "insufficient") return "검증 완료 · 일부 확인불가";
-  return "Instagram 실측 대기";
+  if (candidate.duplicateCheckStatus === "available") {
+    if (candidate.verificationStatus === "verified") return "진행가능(미등록) · 검증 완료";
+    if (candidate.verificationStatus === "insufficient") return "진행가능(미등록) · 일부 확인불가";
+    return "진행가능(미등록) · Instagram 대기";
+  }
+  if (candidate.duplicateCheckStatus === "unknown") return "중복 확인 실패 · 재시도 필요";
+  return "FixUp 중복 확인 대기";
 }
