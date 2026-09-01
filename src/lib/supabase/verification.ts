@@ -1,10 +1,13 @@
-import type { ReelSnapshot, SearchCategory } from "@/lib/discovery/types";
+import type { DuplicateCheckStatus, ReelSnapshot, SearchCategory } from "@/lib/discovery/types";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
+import { decideVerification } from "@/lib/verification/decision";
 import { computeReelMetrics } from "@/lib/verification/metrics";
 import { getSupabaseAdmin } from "./admin";
 
 export type InstagramVerificationResult = {
   handle: string;
+  duplicateStatus: Exclude<DuplicateCheckStatus, "not_checked">;
+  duplicateMessage: string | null;
   exists: boolean | null;
   isPrivate: boolean | null;
   isPersonalCreator: boolean | null;
@@ -46,12 +49,49 @@ export async function applyInstagramVerificationResults(category: SearchCategory
     if (!allowed.has(result.handle) || blocked.has(result.handle)) continue;
 
     const metrics = computeReelMetrics(result.reels);
-    const decision = decideVerification(result);
+    const decision = decideVerification({
+      category,
+      duplicateStatus: result.duplicateStatus,
+      exists: result.exists,
+      isPrivate: result.isPrivate,
+      isPersonalCreator: result.isPersonalCreator,
+      followers: result.followers,
+      recentActivity: result.recentActivity,
+      japaneseTarget: result.japaneseTarget,
+      koreaConnection: result.koreaConnection,
+      categoryRelevant: result.categoryRelevant,
+      reelMetrics: metrics,
+    });
     const now = new Date().toISOString();
+    const compactNote = result.note ? `${decision.reason} · ${result.note}`.slice(0, 500) : decision.reason;
+
+    // FixUp 중복 페이지가 먼저다. 중복/보호/확인불가라면 Instagram 값은 건드리지 않는다.
+    if (result.duplicateStatus !== "available") {
+      const { error } = await supabase
+        .from("creator_candidates")
+        .update({
+          duplicate_check_status: result.duplicateStatus,
+          duplicate_check_message: result.duplicateMessage,
+          duplicate_checked_at: now,
+          verification_note: compactNote,
+          verification_status: decision.verificationStatus,
+          discovery_status: decision.discoveryStatus,
+          updated_at: now,
+        })
+        .eq("normalized_handle", result.handle)
+        .eq("category", category);
+
+      if (error) throw new Error(`@${result.handle} 중복 결과 저장 실패: ${error.message}`);
+      updated += 1;
+      continue;
+    }
 
     const { error } = await supabase
       .from("creator_candidates")
       .update({
+        duplicate_check_status: result.duplicateStatus,
+        duplicate_check_message: result.duplicateMessage,
+        duplicate_checked_at: now,
         bio: result.bio,
         followers: result.followers,
         reel_average: metrics.average,
@@ -62,7 +102,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
         reel_metrics_status: metrics.status,
         reel_views: metrics.snapshots,
         last_activity_at: normalizeIso(result.lastActivityAt),
-        verification_note: result.note,
+        verification_note: compactNote,
         is_private: result.isPrivate,
         is_personal_creator: result.isPersonalCreator,
         japanese_target: result.japaneseTarget,
@@ -82,34 +122,6 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   }
 
   return { updated, ignored: results.length - updated };
-}
-
-function decideVerification(result: InstagramVerificationResult) {
-  if (result.exists === false) return { discoveryStatus: "hard_reject", verificationStatus: "rejected" } as const;
-  if (result.isPrivate === true) return { discoveryStatus: "private", verificationStatus: "private" } as const;
-  if (result.isPersonalCreator === false) return { discoveryStatus: "hard_reject", verificationStatus: "rejected" } as const;
-
-  const coreUnknown = result.exists === null
-    || result.isPrivate === null
-    || result.isPersonalCreator === null
-    || result.japaneseTarget === null
-    || result.koreaConnection === null
-    || result.categoryRelevant === null
-    || result.recentActivity === null
-    || result.followers === null;
-
-  const qualitativePass = result.exists === true
-    && result.isPrivate === false
-    && result.isPersonalCreator === true
-    && result.japaneseTarget === true
-    && result.koreaConnection === true
-    && result.categoryRelevant === true
-    && result.recentActivity === true;
-
-  return {
-    discoveryStatus: qualitativePass && !coreUnknown ? "qualified" : "needs_review",
-    verificationStatus: coreUnknown ? "insufficient" : "verified",
-  } as const;
 }
 
 function normalizeIso(value: string | null) {
