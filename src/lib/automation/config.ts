@@ -4,3 +4,7 @@ export const AUTOMATION_BATCH_SIZE = 30;
 export function getOpenCodeCommand() {
   return process.env.OPENCODE_COMMAND?.trim() || "opencode";
 }
+
+export function getFixUpOpenCodeModel() {
+  return process.env.FIXUP_OPENCODE_MODEL?.trim() || "opencode/nemotron-3.5-lightning-free";
+}
