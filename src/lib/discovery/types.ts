@@ -1,6 +1,6 @@
 export type SearchCategory = "beauty" | "food";
 export type SearchProviderName = "exa" | "tavily";
-export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject";
+export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject" | "qualified";
 export type VerificationStatus = "needs_instagram" | "verified" | "insufficient" | "private" | "rejected" | "hard_reject";
 export type ReelMetricsStatus = "not_checked" | "ready" | "insufficient";
 export type DuplicateCheckStatus = "not_checked" | "available" | "duplicate" | "protected" | "unknown";
