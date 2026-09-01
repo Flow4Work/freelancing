@@ -34,8 +34,6 @@ export async function checkAccountAvailability(handle: string): Promise<AccountA
 
     const html = (await response.text()).slice(0, 300_000);
     const lower = html.toLowerCase();
-    if (UNAVAILABLE_MARKERS.some((marker) => lower.includes(marker))) return "unavailable";
-
     const handleLower = handle.toLowerCase();
     const metaTags = html.match(/<meta\b[^>]*>/gi) ?? [];
     const profileMeta = metaTags.some((tag) => {
@@ -43,7 +41,9 @@ export async function checkAccountAvailability(handle: string): Promise<AccountA
       return (tagLower.includes("og:title") || tagLower.includes("og:description")) && tagLower.includes(handleLower);
     });
 
-    return profileMeta ? "active" : "unknown";
+    if (profileMeta) return "active";
+    if (UNAVAILABLE_MARKERS.some((marker) => lower.includes(marker))) return "unavailable";
+    return "unknown";
   } catch {
     return "unknown";
   } finally {
