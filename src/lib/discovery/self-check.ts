@@ -12,7 +12,7 @@ export function runQualitySelfCheck() {
   ) === null);
   check("direct profile accepted", extractInstagramCandidate("https://www.instagram.com/ayamitakagi325/", "", "")?.handle === "ayamitakagi325");
   check("invalid trailing dot blocked", extractInstagramCandidate("https://www.instagram.com/roundlab.jp./", "", "") === null);
-  check("seo owner extracted", extractInstagramCandidate(
+  check("nonstandard nested profile path blocked", extractInstagramCandidate(
     "https://www.instagram.com/someone/reel/ABC/",
     "",
     "Never miss a post from michan.koreaholic. Sign up for Instagram to stay in the loop.",
@@ -32,6 +32,15 @@ export function runQualitySelfCheck() {
   });
   check("doctor hard rejected", doctor.candidateStatus === "hard_reject");
 
+  const hospital = assessCandidate({
+    handle: "idhospitalkorea",
+    evidenceKind: "content",
+    title: "Korean beauty",
+    text: "日本向け韓国美容コンテンツ",
+    category: "beauty",
+  });
+  check("hospital handle hard rejected", hospital.candidateStatus === "hard_reject");
+
   const business = assessCandidate({
     handle: "korea_hadakanri_nsaas",
     evidenceKind: "profile",
@@ -49,6 +58,15 @@ export function runQualitySelfCheck() {
     category: "beauty",
   });
   check("known creator survives", creator.candidateStatus === "search_qualified");
+
+  const contentOnly = assessCandidate({
+    handle: "somecreator",
+    evidenceKind: "content",
+    title: "韓国在住日本人の韓国美容リール",
+    text: "韓国美容とコスメが好きな日本人クリエイターの投稿です",
+    category: "beauty",
+  });
+  check("content-only result never top-qualified", contentOnly.candidateStatus === "needs_review");
 
   return { ok: failures.length === 0, failures };
 
