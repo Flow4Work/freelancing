@@ -13,7 +13,7 @@ const reelSchema = z.object({
 
 const resultSchema = z.object({
   handle: z.string().min(1).max(30),
-  exists: z.boolean(),
+  exists: z.boolean().nullable(),
   isPrivate: z.boolean().nullable(),
   isPersonalCreator: z.boolean().nullable(),
   bio: z.string().max(2000).nullable(),
