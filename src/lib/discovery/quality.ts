@@ -1,5 +1,6 @@
+import { classifySearchStage } from "./classification";
 import type { InstagramEvidenceKind } from "./instagram";
-import type { CandidateStatus, SearchCategory } from "./types";
+import type { AccountAvailability, AccountType, CandidateActivity, CandidateStatus, ContentFit, Eligibility, KoreaAffinity, SearchCategory } from "./types";
 
 const HANDLE_BUSINESS_PATTERNS = [
   /official/i,
@@ -69,6 +70,13 @@ const KOREA_PATTERNS: Array<[RegExp, string]> = [
   [/🇰🇷/u, "한국 표시"],
 ];
 
+const STRONG_KOREA_PATTERNS = [
+  /韓国在住|在韓/i,
+  /日韓(?:夫婦|カップル|ハーフ)/i,
+  /月\s*\d+.{0,6}(?:渡韓|韓国)/i,
+  /渡韓\s*\d+\s*(?:回|回目|回以上)/i,
+];
+
 const BEAUTY_PATTERNS = [
   /美容|美容医療|コスメ|化粧品|スキンケア|美肌|肌管理|皮膚科|クリニック|薬局|オリーブヤング|購入品|アンプル|セラム|トナー|リジュラン|ポテンツァ|ピコ|リフト|フィラー/i,
   /K-?Beauty/i,
@@ -78,7 +86,20 @@ const FOOD_PATTERNS = [
   /グルメ|食べ歩き|カフェ|レストラン|韓国料理|ごはん|食堂|居酒屋|焼肉|ケジャン/i,
 ];
 
+const KOREA_TRAVEL_PATTERNS = [
+  /韓国旅行|渡韓|ソウル旅行|釜山旅行|韓国ひとり旅|旅韓|韓国観光/i,
+];
+
+const LIFESTYLE_PATTERNS = [
+  /暮らし|ライフスタイル|日常|ファッション|コーデ|育児|ママ|夫婦|VLOG/i,
+];
+
 export type QualityAssessment = {
+  accountType: AccountType;
+  koreaAffinity: KoreaAffinity;
+  contentFit: ContentFit;
+  eligibility: Eligibility;
+  activity: CandidateActivity;
   candidateStatus: CandidateStatus;
   targetSignals: string[];
   koreaSignals: string[];
@@ -93,6 +114,7 @@ type AssessInput = {
   text: string;
   profileText?: string;
   category: SearchCategory;
+  accountAvailability: AccountAvailability;
 };
 
 export function assessCandidate(input: AssessInput): QualityAssessment {
@@ -104,37 +126,87 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
   const rejectReasons: string[] = [];
   const flags: string[] = [];
 
-  if (HANDLE_BUSINESS_PATTERNS.some((pattern) => pattern.test(input.handle))) rejectReasons.push("사업체형 ID");
-  if (profileText && DOCTOR_PATTERNS.some((pattern) => pattern.test(profileText))) rejectReasons.push("의사/병원장 계정");
-  if (profileText && PROFILE_BUSINESS_PATTERNS.some((pattern) => pattern.test(profileText))) rejectReasons.push("공식/사업체 계정");
-
-  if (rejectReasons.length) {
-    return { candidateStatus: "hard_reject", targetSignals, koreaSignals, rejectReasons, flags };
-  }
-
-  const categoryRelevant = input.category === "beauty"
-    ? BEAUTY_PATTERNS.some((pattern) => pattern.test(combined))
-    : FOOD_PATTERNS.some((pattern) => pattern.test(combined));
+  const handleBusiness = HANDLE_BUSINESS_PATTERNS.some((pattern) => pattern.test(input.handle));
+  const doctor = Boolean(profileText) && DOCTOR_PATTERNS.some((pattern) => pattern.test(profileText));
+  const profileBusiness = Boolean(profileText) && PROFILE_BUSINESS_PATTERNS.some((pattern) => pattern.test(profileText));
   const aggregatorLike = Boolean(profileText) && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(profileText));
   const personalLike = PERSONAL_CREATOR_PATTERNS.some((pattern) => pattern.test(combined));
 
+  if (input.accountAvailability === "unavailable") rejectReasons.push("계정 없음");
+  if (handleBusiness) rejectReasons.push("사업체형 ID");
+  if (doctor) rejectReasons.push("의사/병원장 계정");
+  if (profileBusiness) rejectReasons.push("공식/사업체 계정");
+  if (aggregatorLike) rejectReasons.push("미디어/정보 계정");
+
+  const accountType: AccountType = handleBusiness || doctor || profileBusiness || aggregatorLike
+    ? "business"
+    : input.evidenceKind === "profile" && personalLike
+      ? "creator"
+      : "unknown";
+
+  const koreaAffinity: KoreaAffinity = STRONG_KOREA_PATTERNS.some((pattern) => pattern.test(combined))
+    ? "strong"
+    : koreaSignals.length > 0
+      ? "yes"
+      : "unknown";
+
+  const beautyMatch = BEAUTY_PATTERNS.some((pattern) => pattern.test(combined));
+  const foodMatch = FOOD_PATTERNS.some((pattern) => pattern.test(combined));
+  const travelMatch = KOREA_TRAVEL_PATTERNS.some((pattern) => pattern.test(combined));
+  const lifestyleMatch = LIFESTYLE_PATTERNS.some((pattern) => pattern.test(combined));
+
+  const contentFit: ContentFit = input.category === "beauty" && beautyMatch
+    ? "beauty"
+    : input.category === "food" && foodMatch
+      ? "food"
+      : beautyMatch
+        ? "beauty"
+        : foodMatch
+          ? "food"
+          : travelMatch
+            ? "korea_travel"
+            : lifestyleMatch
+              ? "lifestyle"
+              : "other";
+
+  const eligibility: Eligibility = accountType === "business" || koreaAffinity === "none"
+    ? "fail"
+    : accountType === "creator"
+      && (koreaAffinity === "strong" || koreaAffinity === "yes")
+      && contentFit === input.category
+      ? "possible"
+      : "unknown";
+
+  const activity: CandidateActivity = "unknown";
+
+  if (input.accountAvailability === "unknown") flags.push("계정 존재 확인 불가");
   if (!targetSignals.length) flags.push("일본 타깃 근거 약함");
-  if (!koreaSignals.length) flags.push("한국 접점 근거 약함");
-  if (!categoryRelevant) flags.push("장르 근거 추가확인");
-  if (!personalLike) flags.push("개인 Creator 근거 추가확인");
-  if (aggregatorLike) flags.push("미디어/정보계정 여부 확인");
+  if (koreaAffinity === "unknown") flags.push("한국 접점 근거 약함");
+  if (contentFit !== input.category) flags.push("장르 근거 추가확인");
+  if (accountType === "unknown") flags.push("개인 Creator 근거 추가확인");
   if (input.evidenceKind === "content") flags.push("게시물 근거·프로필 재확인");
 
-  const candidateStatus: CandidateStatus = input.evidenceKind === "profile"
-    && targetSignals.length > 0
-    && koreaSignals.length > 0
-    && categoryRelevant
-    && personalLike
-    && !aggregatorLike
-    ? "search_qualified"
-    : "needs_review";
+  const candidateStatus = classifySearchStage({
+    category: input.category,
+    accountAvailability: input.accountAvailability,
+    accountType,
+    koreaAffinity,
+    contentFit,
+    eligibility,
+  });
 
-  return { candidateStatus, targetSignals, koreaSignals, rejectReasons, flags };
+  return {
+    accountType,
+    koreaAffinity,
+    contentFit,
+    eligibility,
+    activity,
+    candidateStatus,
+    targetSignals,
+    koreaSignals,
+    rejectReasons,
+    flags,
+  };
 }
 
 function collectSignals(text: string, patterns: Array<[RegExp, string]>) {
