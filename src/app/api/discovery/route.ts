@@ -23,6 +23,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "검색 조건이 올바르지 않습니다.", details: error.issues }, { status: 400 });
     }
     console.error("discovery_failed", error);
-    return NextResponse.json({ error: "후보 검색 중 오류가 발생했습니다." }, { status: 500 });
+    const localMessage = error instanceof Error ? error.message : "후보 검색 중 오류가 발생했습니다.";
+    return NextResponse.json(
+      { error: process.env.NODE_ENV === "development" ? localMessage : "후보 검색 중 오류가 발생했습니다." },
+      { status: 500 },
+    );
   }
 }
