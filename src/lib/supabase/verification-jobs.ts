@@ -7,6 +7,8 @@ export async function createVerificationJob(category: SearchCategory, handles: s
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
 
   const normalized = normalizeHandles(handles);
+  if (!normalized.length) throw new Error("검증할 후보가 없습니다.");
+
   const { data, error } = await supabase
     .from("creator_verification_jobs")
     .insert({ category, handles: normalized })
@@ -21,9 +23,12 @@ export async function assertVerificationJob(jobId: string, category: SearchCateg
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
 
+  const submitted = handles.map(normalizeHandle);
+  if (new Set(submitted).size !== submitted.length) throw new Error("검증 결과에 중복 계정이 포함되어 있습니다.");
+
   const { data, error } = await supabase
     .from("creator_verification_jobs")
-    .select("id, category, handles, status")
+    .select("id, category, handles, status, created_at")
     .eq("id", jobId)
     .single();
 
@@ -31,8 +36,13 @@ export async function assertVerificationJob(jobId: string, category: SearchCateg
   if (String(data.status) !== "pending") throw new Error("이미 완료된 검증 작업입니다.");
   if (String(data.category) !== category) throw new Error("검증 작업 장르가 일치하지 않습니다.");
 
+  const createdAt = Date.parse(String(data.created_at));
+  if (Number.isFinite(createdAt) && Date.now() - createdAt > 6 * 60 * 60 * 1000) {
+    throw new Error("검증 작업이 6시간을 지나 만료되었습니다. 새 프롬프트를 생성하세요.");
+  }
+
   const expected = normalizeHandles(Array.isArray(data.handles) ? data.handles.map(String) : []);
-  const actual = normalizeHandles(handles);
+  const actual = normalizeHandles(submitted);
   if (expected.length !== actual.length || expected.some((handle, index) => handle !== actual[index])) {
     throw new Error("검증 작업의 후보 목록과 제출 결과가 일치하지 않습니다.");
   }
