@@ -114,6 +114,15 @@ export function DiscoveryConsole() {
 
   function candidateState(candidate: DiscoveryCandidate): CandidateViewState {
     const state = getCandidateViewState(candidate);
+    if (
+      state === "verification_needed"
+      && (
+        candidate.evidenceKind !== "profile"
+        || candidate.flags.includes("개인 Creator 근거 추가확인")
+      )
+    ) {
+      return "unmapped";
+    }
     if (state === "duplicate_passed" && finalVerificationHandles.has(candidate.handle)) {
       return "final_verification";
     }
@@ -261,7 +270,12 @@ export function DiscoveryConsole() {
               <button className={statusFilter === "dm_ready" ? "active" : ""} onClick={() => setStatusFilter("dm_ready")}>DM 준비</button>
             </div>
             {action && (
-              <button className="secondary action-button" onClick={() => runAutomation(action.mode)} disabled={automationLoading || !filteredCandidates.length}>
+              <button
+                className="secondary action-button"
+                style={action.mode === "instagram" ? { background: "#e04f70" } : undefined}
+                onClick={() => runAutomation(action.mode)}
+                disabled={automationLoading || !filteredCandidates.length}
+              >
                 {automationLoading ? "OpenCode 실행 중…" : action.label}
               </button>
             )}
@@ -290,7 +304,7 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
-                <td><span className={`candidate-state ${stateTone(state)}`}>{stateLabel(state)}</span></td>
+                <td><span className={`candidate-state ${stateTone(state)}`}>{stateLabel(state, candidate)}</span></td>
                 <td className="status">{metricLabel(candidate)}</td>
                 <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
@@ -304,10 +318,14 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
   );
 }
 
-function stateLabel(state: CandidateViewState) {
+function stateLabel(state: CandidateViewState, candidate: DiscoveryCandidate) {
   if (state === "verification_needed") return "검증 필요";
   if (state === "recommended") return "추천 후보";
-  if (state === "duplicate_passed") return "중복 통과";
+  if (state === "duplicate_passed") {
+    if (candidate.candidateStatus === "search_qualified") return "중복 통과 · 추천 후보";
+    if (candidate.candidateStatus === "needs_review") return "중복 통과 · 검증 필요";
+    return "중복 통과";
+  }
   if (state === "final_verification") return "최종 검증";
   if (state === "dm_ready") return "DM 준비";
   return "기존 상태";
