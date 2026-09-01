@@ -31,8 +31,9 @@ export function runQualitySelfCheck() {
     title: "Dr.Hizuki Hanafusa",
     text: "ニキビ跡・毛穴治療 美容皮膚科経営 首都圏、関西に17院展開 東大医学部卒",
     category: "beauty",
+    accountAvailability: "active",
   });
-  check("doctor hard rejected", doctor.candidateStatus === "hard_reject");
+  check("doctor hard rejected", doctor.candidateStatus === "hard_reject" && doctor.accountType === "business");
 
   const hospital = assessCandidate({
     handle: "idhospitalkorea",
@@ -40,6 +41,7 @@ export function runQualitySelfCheck() {
     title: "Korean beauty",
     text: "日本向け韓国美容コンテンツ",
     category: "beauty",
+    accountAvailability: "active",
   });
   check("hospital handle hard rejected", hospital.candidateStatus === "hard_reject");
 
@@ -49,8 +51,9 @@ export function runQualitySelfCheck() {
     title: "韓国肌管理",
     text: "日本に肌管理を持って来た私たち 韓国人施術者 創業10年 ビジネスサービス",
     category: "beauty",
+    accountAvailability: "active",
   });
-  check("business hard rejected", business.candidateStatus === "hard_reject");
+  check("business hard rejected", business.candidateStatus === "hard_reject" && business.accountType === "business");
 
   const oliveYoung = assessCandidate({
     handle: "oliveyoung_japan",
@@ -58,6 +61,7 @@ export function runQualitySelfCheck() {
     title: "OLIVE YOUNG JAPAN",
     text: "韓国コスメ 美容 スキンケア",
     category: "beauty",
+    accountAvailability: "active",
   });
   check("known Olive Young official handle rejected", oliveYoung.candidateStatus === "hard_reject");
 
@@ -67,8 +71,29 @@ export function runQualitySelfCheck() {
     title: "Ayami 韓国在住 韓国美容 韓国旅行",
     text: "Japan→Seoul 在韓8年目 リアルな韓国を発信 美容・グルメ 韓国美容 皮膚科 コスメ",
     category: "beauty",
+    accountAvailability: "active",
   });
-  check("known creator survives", creator.candidateStatus === "search_qualified");
+  check("known creator becomes recommended without Reel metrics", creator.candidateStatus === "search_qualified" && creator.eligibility === "possible");
+
+  const availabilityUnknown = assessCandidate({
+    handle: "sample_creator",
+    evidenceKind: "profile",
+    title: "韓国在住日本人",
+    text: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信",
+    category: "beauty",
+    accountAvailability: "unknown",
+  });
+  check("unknown account availability stays review", availabilityUnknown.candidateStatus === "needs_review");
+
+  const unavailable = assessCandidate({
+    handle: "gone_creator",
+    evidenceKind: "profile",
+    title: "韓国在住日本人",
+    text: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信",
+    category: "beauty",
+    accountAvailability: "unavailable",
+  });
+  check("unavailable account is rejected", unavailable.candidateStatus === "hard_reject");
 
   const mergedCreator = assessCandidate({
     handle: "sample_creator",
@@ -77,6 +102,7 @@ export function runQualitySelfCheck() {
     profileText: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信",
     text: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信 クリニック公式アカウントの施術を体験",
     category: "beauty",
+    accountAvailability: "active",
   });
   check("content business mention does not poison clean profile", mergedCreator.candidateStatus === "search_qualified");
 
@@ -86,8 +112,9 @@ export function runQualitySelfCheck() {
     title: "韓国在住日本人の韓国美容リール",
     text: "韓国美容とコスメが好きな日本人クリエイターの投稿です",
     category: "beauty",
+    accountAvailability: "active",
   });
-  check("content-only result never top-qualified", contentOnly.candidateStatus === "needs_review");
+  check("content-only result stays review", contentOnly.candidateStatus === "needs_review" && contentOnly.accountType === "unknown");
 
   const metrics = computeReelMetrics([
     { url: "r1", postedAt: "2026-08-30", views: 1000 },
