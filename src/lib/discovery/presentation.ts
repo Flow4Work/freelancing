@@ -20,13 +20,14 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     return "unmapped";
   }
 
-  // Google Apps Script 중복 통과 이후에만 Instagram 최종 검증 단계로 이동한다.
+  // 중복 통과 후 최종 검증이 끝나지 않았거나 필수값이 부족하면 중복 통과에 남겨 재검증한다.
   if (candidate.duplicateCheckStatus === "available") {
-    if (candidate.verificationStatus === "needs_instagram") {
+    if (candidate.verificationStatus === "needs_instagram" || candidate.verificationStatus === "insufficient") {
       return "duplicate_passed";
     }
 
-    if (candidate.verificationStatus === "verified" || candidate.verificationStatus === "insufficient") {
+    // 실제 모집조건을 모두 통과한 qualified + verified만 최종 검증 완료로 보낸다.
+    if (candidate.verificationStatus === "verified" && candidate.candidateStatus === "qualified") {
       return "final_verification";
     }
 
