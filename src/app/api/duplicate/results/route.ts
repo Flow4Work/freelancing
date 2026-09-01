@@ -27,7 +27,7 @@ export async function POST(request: Request) {
     const handles = parsed.data.results.map((result) => result.handle);
     await assertVerificationJob(parsed.data.jobId, parsed.data.category, handles, "duplicate");
     const saved = await applyDuplicateCheckResults(parsed.data.category, parsed.data.results);
-    await completeVerificationJob(parsed.data.jobId);
+    await completeVerificationJob(parsed.data.jobId, parsed.data.category, handles);
     return NextResponse.json({ ok: true, jobId: parsed.data.jobId, ...saved });
   } catch (error) {
     const message = error instanceof Error ? error.message : "중복 확인 결과 저장 실패";
