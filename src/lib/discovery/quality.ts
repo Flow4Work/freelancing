@@ -39,8 +39,9 @@ const PROFILE_AGGREGATOR_PATTERNS = [
 const PERSONAL_CREATOR_PATTERNS = [
   /(?:会社員|OL|ママ|mama|主婦|学生|留学生|ワーホリ)/i,
   /(?:ひとり旅|一人旅|旅行好き|韓国好き|コスメ好き|美容好き|オタク)/i,
-  /(?:クリエイター|インフルエンサー|ブロガー|美容家|ライター|VLOG)/i,
+  /(?:クリエイター|インフルエンサー|ブロガー|美容家|ライター|VLOG|UGC)/i,
   /(?:在韓|韓国在住|日本人|日韓夫婦|日韓ハーフ)/i,
+  /(?:渡韓\s*\d+|月\s*\d+.{0,4}韓国|韓国旅行\s*\d+)/i,
   /\d{2,3}\s*cm/i,
   /\d{2}\s*代/i,
 ];
@@ -57,8 +58,9 @@ const JAPAN_IDENTITY_PATTERNS: Array<[RegExp, string]> = [
 const KOREA_PATTERNS: Array<[RegExp, string]> = [
   [/韓国在住|在韓/i, "한국 거주"],
   [/渡韓|訪韓/i, "방한"],
-  [/韓国美容|美容渡韓|韓国皮膚科|韓国クリニック/i, "한국 미용"],
-  [/韓国コスメ|K-?Beauty/i, "K뷰티"],
+  [/韓国美容|美容渡韓|韓国皮膚科|韓国クリニック|韓国美容医療/i, "한국 미용"],
+  [/韓国コスメ|K-?Beauty|オリーブヤング|韓国スキンケア/i, "K뷰티"],
+  [/韓国薬局|韓国(?:美容)?薬局/i, "한국 약국"],
   [/韓国グルメ|ソウルグルメ|釜山グルメ/i, "한국 맛집"],
   [/韓国旅行|韓国ひとり旅/i, "한국 여행"],
   [/ソウル|Seoul/i, "서울"],
@@ -67,7 +69,7 @@ const KOREA_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const BEAUTY_PATTERNS = [
-  /美容|コスメ|スキンケア|肌管理|皮膚科|クリニック|リジュラン|ポテンツァ|ピコ|リフト|フィラー/i,
+  /美容|美容医療|コスメ|化粧品|スキンケア|美肌|肌管理|皮膚科|クリニック|薬局|オリーブヤング|購入品|アンプル|セラム|トナー|リジュラン|ポテンツァ|ピコ|リフト|フィラー/i,
   /K-?Beauty/i,
 ];
 
@@ -88,30 +90,22 @@ type AssessInput = {
   evidenceKind: InstagramEvidenceKind;
   title: string;
   text: string;
+  profileText?: string;
   category: SearchCategory;
 };
 
 export function assessCandidate(input: AssessInput): QualityAssessment {
   const combined = clean(`${input.title}\n${input.text}`);
+  const profileText = clean(input.profileText ?? (input.evidenceKind === "profile" ? combined : ""));
   const targetSignals = collectSignals(combined, JAPAN_IDENTITY_PATTERNS);
   if (hasEnoughJapaneseScript(combined) && !targetSignals.includes("일본어 콘텐츠")) targetSignals.push("일본어 콘텐츠");
   const koreaSignals = collectSignals(combined, KOREA_PATTERNS);
   const rejectReasons: string[] = [];
   const flags: string[] = [];
 
-  if (HANDLE_BUSINESS_PATTERNS.some((pattern) => pattern.test(input.handle))) {
-    rejectReasons.push("사업체형 ID");
-  }
-
-  // 게시물 본문에는 리뷰 대상 의사/병원명이 자주 등장하므로,
-  // 의사 판정은 프로필형 검색 결과에서만 hard reject 한다.
-  if (input.evidenceKind === "profile" && DOCTOR_PATTERNS.some((pattern) => pattern.test(combined))) {
-    rejectReasons.push("의사/병원장 계정");
-  }
-
-  if (input.evidenceKind === "profile" && PROFILE_BUSINESS_PATTERNS.some((pattern) => pattern.test(combined))) {
-    rejectReasons.push("공식/사업체 계정");
-  }
+  if (HANDLE_BUSINESS_PATTERNS.some((pattern) => pattern.test(input.handle))) rejectReasons.push("사업체형 ID");
+  if (profileText && DOCTOR_PATTERNS.some((pattern) => pattern.test(profileText))) rejectReasons.push("의사/병원장 계정");
+  if (profileText && PROFILE_BUSINESS_PATTERNS.some((pattern) => pattern.test(profileText))) rejectReasons.push("공식/사업체 계정");
 
   if (rejectReasons.length) {
     return { candidateStatus: "hard_reject", targetSignals, koreaSignals, rejectReasons, flags };
@@ -120,7 +114,7 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
   const categoryRelevant = input.category === "beauty"
     ? BEAUTY_PATTERNS.some((pattern) => pattern.test(combined))
     : FOOD_PATTERNS.some((pattern) => pattern.test(combined));
-  const aggregatorLike = input.evidenceKind === "profile" && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(combined));
+  const aggregatorLike = Boolean(profileText) && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(profileText));
   const personalLike = PERSONAL_CREATOR_PATTERNS.some((pattern) => pattern.test(combined));
 
   if (!targetSignals.length) flags.push("일본 타깃 근거 약함");
@@ -130,8 +124,6 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
   if (aggregatorLike) flags.push("미디어/정보계정 여부 확인");
   if (input.evidenceKind === "content") flags.push("게시물 근거·프로필 재확인");
 
-  // 게시물 검색 결과만으로는 실제 계정 유형을 확정하지 않는다.
-  // '유력'은 프로필형 근거 + 개인 creator 신호 + 일본/한국/장르 근거가 모두 있을 때만 부여한다.
   const candidateStatus: CandidateStatus = input.evidenceKind === "profile"
     && targetSignals.length > 0
     && koreaSignals.length > 0
