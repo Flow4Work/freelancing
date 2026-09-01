@@ -35,12 +35,23 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
   const invokedPath = path.join(root, `${input.jobId}.invoked`);
   const failedPath = path.join(root, `${input.jobId}.failed`);
+  const completedPath = path.join(root, `${input.jobId}.completed`);
 
   await Promise.all([
     rm(invokedPath, { force: true }),
     rm(failedPath, { force: true }),
+    rm(completedPath, { force: true }),
   ]);
-  await writeFile(promptPath, input.prompt, { encoding: "utf8" });
+
+  const completionInstruction = `
+
+마지막 성공 신호:
+- localhost 결과 제출 응답의 \"ok\":true를 실제 확인한 뒤에만 아래 PowerShell 명령을 정확히 한 번 실행한다.
+- 제출 실패, 로그인 실패, 검증 실패, 중간 종료 상태에서는 이 파일을 절대 만들지 않는다.
+Set-Content -LiteralPath ${psQuote(completedPath)} -Value ok -Encoding ASCII
+- 이 완료 신호까지 만든 뒤에만 OpenCode 작업을 정상 종료한다.`;
+
+  await writeFile(promptPath, `${input.prompt}${completionInstruction}`, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -53,6 +64,7 @@ $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
+$CompletedFile = ${psQuote(completedPath)}
 
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
@@ -75,9 +87,19 @@ try {
     throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
   }
 
+  if (-not (Test-Path -LiteralPath $CompletedFile)) {
+    throw "OpenCode가 종료됐지만 localhost 결과 제출 완료 신호가 없습니다. 로그인/페이지 접근/결과 POST가 끝나지 않은 상태입니다."
+  }
+
+  $CompletionValue = (Get-Content -LiteralPath $CompletedFile -Raw).Trim()
+  if ($CompletionValue -ne "ok") {
+    throw "localhost 결과 제출 완료 신호가 올바르지 않습니다."
+  }
+
   Write-Host ""
-  Write-Host "[FixUp Scout] 완료. 결과는 Scout 화면에 자동 반영됩니다." -ForegroundColor Green
+  Write-Host "[FixUp Scout] 완료. localhost 결과 제출 확인됨." -ForegroundColor Green
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $CompletedFile -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 3
   exit 0
 }
@@ -86,7 +108,7 @@ catch {
   try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
   Write-Host ""
   Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
-  Write-Host "확인할 수 있도록 이 창을 유지합니다." -ForegroundColor Yellow
+  Write-Host "결과 제출이 확인되지 않았으므로 이 창을 유지합니다." -ForegroundColor Yellow
   Read-Host "확인 후 Enter"
   exit 1
 }
