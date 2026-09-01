@@ -34,9 +34,14 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const promptPath = path.join(root, `${input.jobId}.md`);
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
   const invokedPath = path.join(root, `${input.jobId}.invoked`);
+  const completedPath = path.join(root, `${input.jobId}.completed`);
   const failedPath = path.join(root, `${input.jobId}.failed`);
-  await rm(invokedPath, { force: true });
-  await rm(failedPath, { force: true });
+
+  await Promise.all([
+    rm(invokedPath, { force: true }),
+    rm(completedPath, { force: true }),
+    rm(failedPath, { force: true }),
+  ]);
   await writeFile(promptPath, input.prompt, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
@@ -49,23 +54,28 @@ Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
+$CompletedFile = ${psQuote(completedPath)}
 $FailedFile = ${psQuote(failedPath)}
 
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
-  $Prompt = [IO.File]::ReadAllText($PromptFile, [Text.Encoding]::UTF8)
-  if ([string]::IsNullOrWhiteSpace($Prompt)) {
+  if (-not (Test-Path -LiteralPath $PromptFile)) {
+    throw "FixUp Scout 프롬프트 파일을 찾을 수 없습니다."
+  }
+  if ((Get-Item -LiteralPath $PromptFile).Length -le 0) {
     throw "FixUp Scout 프롬프트가 비어 있습니다."
   }
 
   Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 작업 프롬프트를 opencode run으로 전달합니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] 생성된 작업 지시 파일을 opencode run에 전달합니다." -ForegroundColor DarkGray
   Write-Host ""
-  [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
 
-  & $OpenCode run $Prompt
+  [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
+  & $OpenCode run --file $PromptFile "첨부된 FixUp Scout 작업 지시를 그대로 실행하고 localhost 결과 제출까지 완료해."
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
+  [IO.File]::WriteAllText($CompletedFile, [string]$Code, $Utf8)
+
   if ($Code -ne 0) {
     throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
   }
@@ -73,9 +83,8 @@ try {
   Write-Host ""
   Write-Host "[FixUp Scout] 완료. 결과는 Scout 화면에 자동 반영됩니다." -ForegroundColor Green
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $InvokedFile -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $FailedFile -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 3
+  exit 0
 }
 catch {
   $FailureMessage = $_.Exception.Message
@@ -103,7 +112,7 @@ catch {
 
   try {
     await waitForChildSpawn(child);
-    await waitForOpenCodeStart(child, invokedPath, failedPath);
+    await waitForOpenCodeInvocation(child, invokedPath, completedPath, failedPath);
   } catch (error) {
     child.unref();
     throw error;
@@ -111,6 +120,13 @@ catch {
 
   const processId = child.pid ?? null;
   child.unref();
+
+  await Promise.all([
+    rm(invokedPath, { force: true }),
+    rm(completedPath, { force: true }),
+    rm(failedPath, { force: true }),
+  ]);
+
   return { command, promptPath, processId };
 }
 
@@ -142,43 +158,76 @@ async function waitForChildSpawn(child: ChildProcess) {
   });
 }
 
-async function waitForOpenCodeStart(child: ChildProcess, invokedPath: string, failedPath: string) {
+async function waitForOpenCodeInvocation(
+  child: ChildProcess,
+  invokedPath: string,
+  completedPath: string,
+  failedPath: string,
+) {
   const invokeDeadline = Date.now() + 5000;
+
   while (Date.now() < invokeDeadline) {
-    const failure = await readFailure(failedPath);
+    const failure = await readTextIfPresent(failedPath);
     if (failure) throw new Error(`OpenCode 실행 실패: ${failure}`);
-    if (child.exitCode !== null) {
-      throw new Error(`PowerShell이 OpenCode 호출 전에 종료되었습니다. (exit ${child.exitCode})`);
+
+    if (await fileExists(invokedPath)) {
+      break;
     }
 
-    try {
-      await access(invokedPath);
-      break;
-    } catch {
-      await sleep(100);
+    if (child.exitCode !== null) {
+      await sleep(150);
+      const lateFailure = await readTextIfPresent(failedPath);
+      if (lateFailure) throw new Error(`OpenCode 실행 실패: ${lateFailure}`);
+      if (await fileExists(invokedPath)) break;
+      throw new Error(`PowerShell이 OpenCode 호출 단계 전에 종료되었습니다. (exit ${child.exitCode})`);
     }
+
+    await sleep(100);
   }
 
-  try {
-    await access(invokedPath);
-  } catch {
+  if (!(await fileExists(invokedPath))) {
     throw new Error("PowerShell은 시작됐지만 OpenCode 호출 단계까지 진입하지 못했습니다. 열린 창의 오류를 확인하세요.");
   }
 
-  const aliveDeadline = Date.now() + 1200;
-  while (Date.now() < aliveDeadline) {
-    const failure = await readFailure(failedPath);
+  const graceDeadline = Date.now() + 600;
+  while (Date.now() < graceDeadline) {
+    const failure = await readTextIfPresent(failedPath);
     if (failure) throw new Error(`OpenCode 실행 실패: ${failure}`);
-    if (child.exitCode !== null) {
-      throw new Error(`OpenCode가 시작 직후 종료되었습니다. (exit ${child.exitCode})`);
+
+    const completed = await readTextIfPresent(completedPath);
+    if (completed !== null) {
+      const code = Number(completed);
+      if (Number.isFinite(code) && code !== 0) {
+        throw new Error(`OpenCode가 시작 직후 종료되었습니다. (exit ${code})`);
+      }
+      return;
     }
+
+    if (child.exitCode !== null) {
+      await sleep(150);
+      const lateFailure = await readTextIfPresent(failedPath);
+      if (lateFailure) throw new Error(`OpenCode 실행 실패: ${lateFailure}`);
+      const lateCompleted = await readTextIfPresent(completedPath);
+      if (lateCompleted !== null && Number(lateCompleted) === 0) return;
+      throw new Error(`PowerShell이 OpenCode 실행 중 예기치 않게 종료되었습니다. (exit ${child.exitCode})`);
+    }
+
     await sleep(100);
   }
 }
 
-async function readFailure(failedPath: string) {
+async function fileExists(filePath: string) {
   try {
-    return (await readFile(failedPath, "utf8")).trim() || "알 수 없는 오류";
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readTextIfPresent(filePath: string) {
+  try {
+    return (await readFile(filePath, "utf8")).trim();
   } catch {
     return null;
   }
