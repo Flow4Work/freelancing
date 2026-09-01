@@ -1,0 +1,167 @@
+:root {
+  --bg: #f5f7f9;
+  --surface: #ffffff;
+  --text: #191f28;
+  --muted: #6b7684;
+  --line: #e5e8eb;
+  --blue: #3182f6;
+  --blue-soft: #eaf3ff;
+  --green: #00a86b;
+  --red: #e54949;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.05);
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-family: Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+button, input { font: inherit; }
+a { color: inherit; }
+
+.shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 52px 0 80px;
+}
+
+.hero { margin-bottom: 24px; }
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+h1 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 38px);
+  line-height: 1.2;
+  letter-spacing: -0.035em;
+}
+.subcopy {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.card {
+  border: 1px solid rgba(25, 31, 40, 0.05);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.controls { padding: 22px; }
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+.segment {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: #f2f4f6;
+}
+.segment button {
+  border: 0;
+  border-radius: 11px;
+  padding: 10px 18px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-weight: 700;
+}
+.segment button.active {
+  color: var(--text);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+}
+.field { display: grid; gap: 6px; }
+.field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.field input {
+  width: 104px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: none;
+  background: #fff;
+}
+.field input:focus { border-color: var(--blue); }
+.primary {
+  margin-left: auto;
+  border: 0;
+  border-radius: 13px;
+  padding: 11px 18px;
+  color: #fff;
+  background: var(--blue);
+  cursor: pointer;
+  font-weight: 800;
+}
+.primary:disabled { opacity: .55; cursor: wait; }
+
+.provider-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #f2f4f6;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: #b0b8c1; }
+.dot.on { background: var(--green); }
+
+.notice {
+  margin-top: 14px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--muted);
+  background: #f8f9fa;
+  font-size: 13px;
+}
+.notice.error { color: var(--red); background: #fff1f1; }
+
+.results { margin-top: 18px; overflow: hidden; }
+.results-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.results-head strong { font-size: 16px; }
+.results-head span { color: var(--muted); font-size: 13px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 860px; }
+th, td { padding: 14px 16px; border-bottom: 1px solid #f0f2f4; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-size: 12px; font-weight: 700; background: #fbfcfd; }
+td { font-size: 13px; }
+tbody tr:last-child td { border-bottom: 0; }
+.handle { font-weight: 800; }
+.link { color: var(--blue); font-weight: 700; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+.evidence { max-width: 360px; color: #4e5968; }
+.status { color: #8b95a1; white-space: nowrap; }
+.flag { display: inline-block; margin: 2px 4px 2px 0; padding: 3px 7px; border-radius: 8px; background: #fff4e6; color: #b76e00; font-size: 11px; }
+.empty { padding: 42px 20px; color: var(--muted); text-align: center; }
+
+@media (max-width: 720px) {
+  .shell { width: min(100% - 20px, 1180px); padding-top: 30px; }
+  .controls { padding: 16px; }
+  .primary { width: 100%; margin-left: 0; }
+}
