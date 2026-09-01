@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { assertLocalRequest, assertOpenCodeAvailable, assertOpenCodeRunnable, launchOpenCodeJob } from "@/lib/automation/opencode-launcher";
+import { assertLocalRequest, assertOpenCodeAvailable, launchOpenCodeJob } from "@/lib/automation/opencode-launcher";
 import { buildDuplicateCheckPrompt } from "@/lib/discovery/duplicate-prompt";
 import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
@@ -73,10 +73,6 @@ export async function POST(request: Request) {
       const label = parsed.data.mode === "duplicate" ? "추천 후보/검증 필요" : "중복 통과";
       return NextResponse.json({ ok: false, error: `${label} 상태에서 실행할 후보가 없습니다.` }, { status: 409 });
     }
-
-    // 실제 작업을 만들기 전에 현재 OpenCode 기본 모델/provider가 응답 가능한지 짧게 확인한다.
-    // 크레딧/사용량 제한, 인증, 모델/provider 장애면 pending job을 만들지 않고 정확한 원문을 반환한다.
-    assertOpenCodeRunnable();
 
     const jobId = await createVerificationJob(parsed.data.category, candidates.map((candidate) => candidate.handle), parsed.data.mode);
     const prompt = parsed.data.mode === "duplicate"
