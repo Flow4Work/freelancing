@@ -46,6 +46,7 @@ export function DiscoveryConsole() {
   const [result, setResult] = useState<DiscoveryResponse | null>(null);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [finalVerificationHandles, setFinalVerificationHandles] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [automationLoading, setAutomationLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
@@ -68,6 +69,7 @@ export function DiscoveryConsole() {
     setListLoading(true);
     setResult(null);
     setStatusFilter("all");
+    setFinalVerificationHandles(new Set());
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -93,6 +95,7 @@ export function DiscoveryConsole() {
     const timer = window.setInterval(async () => {
       if (Date.now() > automationWatchUntil) {
         setAutomationWatchUntil(null);
+        setFinalVerificationHandles(new Set());
         return;
       }
       try {
@@ -119,16 +122,24 @@ export function DiscoveryConsole() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  function candidateState(candidate: DiscoveryCandidate): CandidateViewState {
+    const state = getCandidateViewState(candidate);
+    if (state === "duplicate_passed" && finalVerificationHandles.has(candidate.handle)) {
+      return "final_verification";
+    }
+    return state;
+  }
+
   const filteredCandidates = useMemo(() => {
     if (statusFilter === "all") return candidates;
-    return candidates.filter((candidate) => getCandidateViewState(candidate) === statusFilter);
-  }, [candidates, statusFilter]);
+    return candidates.filter((candidate) => candidateState(candidate) === statusFilter);
+  }, [candidates, statusFilter, finalVerificationHandles]);
 
-  const verificationNeededTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "verification_needed").length;
-  const recommendedTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "recommended").length;
-  const duplicatePassedTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "duplicate_passed").length;
-  const finalVerificationTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "final_verification").length;
-  const dmReadyTotal = candidates.filter((candidate) => getCandidateViewState(candidate) === "dm_ready").length;
+  const verificationNeededTotal = candidates.filter((candidate) => candidateState(candidate) === "verification_needed").length;
+  const recommendedTotal = candidates.filter((candidate) => candidateState(candidate) === "recommended").length;
+  const duplicatePassedTotal = candidates.filter((candidate) => candidateState(candidate) === "duplicate_passed").length;
+  const finalVerificationTotal = candidates.filter((candidate) => candidateState(candidate) === "final_verification").length;
+  const dmReadyTotal = candidates.filter((candidate) => candidateState(candidate) === "dm_ready").length;
 
   const action = statusFilter === "verification_needed" || statusFilter === "recommended"
     ? { mode: "duplicate" as const, label: "중복 확인 실행" }
@@ -141,6 +152,15 @@ export function DiscoveryConsole() {
     const payload = await response.json() as CandidateListResponse & { error?: string };
     if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
     setCandidates(payload.candidates);
+    setFinalVerificationHandles((current) => {
+      if (!current.size) return current;
+      const stillPending = new Set(
+        payload.candidates
+          .filter((candidate) => current.has(candidate.handle) && getCandidateViewState(candidate) === "duplicate_passed")
+          .map((candidate) => candidate.handle),
+      );
+      return stillPending.size === current.size ? current : stillPending;
+    });
   }
 
   async function runDiscovery() {
@@ -185,6 +205,10 @@ export function DiscoveryConsole() {
       const payload = await response.json() as AutomationRunResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "OpenCode 자동 실행 실패");
 
+      if (mode === "instagram") {
+        setFinalVerificationHandles(new Set(handles));
+        setStatusFilter("final_verification");
+      }
       setAutomationWatchUntil(Date.now() + 10 * 60 * 1000);
       setToast({
         kind: "success",
@@ -269,7 +293,7 @@ export function DiscoveryConsole() {
             )}
           </div>
         </div>
-        {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
+        {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} getState={candidateState} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
 
       {settingsOpen && <SettingsModal settings={settings} onClose={() => setSettingsOpen(false)} />}
@@ -282,14 +306,14 @@ function Provider({ label, on }: { label: string; on: boolean }) {
   return <span className="pill"><span className={`dot ${on ? "on" : ""}`} />{label}</span>;
 }
 
-function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
+function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandidate[]; getState: (candidate: DiscoveryCandidate) => CandidateViewState }) {
   return (
     <div className="table-wrap">
       <table>
         <thead><tr><th>Instagram</th><th>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>중복</th><th>검증</th></tr></thead>
         <tbody>
           {candidates.map((candidate) => {
-            const state = getCandidateViewState(candidate);
+            const state = getState(candidate);
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
@@ -319,8 +343,8 @@ function SettingsModal({ settings, onClose }: { settings: AutomationSettings | n
           <div className="settings-content">
             <SettingRow label="OpenCode" value={`${settings.openCodeCommand} run`} />
             <SettingRow label="배치" value={`최대 ${settings.batchSize}명`} />
-            <SettingRow label="중복 검사 버튼" value={settings.modes.qualified} />
-            <SettingRow label="최종 검증 버튼" value={settings.modes.priority} />
+            <SettingRow label="유력 버튼" value={settings.modes.qualified} />
+            <SettingRow label="검증 우선 버튼" value={settings.modes.priority} />
             <SettingRow label="중복 페이지" value={settings.duplicateUrl} mono />
             <div className="settings-rules"><span>공통 규칙</span>{settings.rules.map((rule) => <p key={rule}>• {rule}</p>)}</div>
           </div>
