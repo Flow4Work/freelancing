@@ -185,10 +185,10 @@ export function DiscoveryConsole() {
     try {
       const response = await fetch(`/api/automation/run?category=${category}`, { cache: "no-store" });
       const payload = await response.json() as AutomationHistoryResponse;
-      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "알림 조회 실패");
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "기록 조회 실패");
       setHistoryItems(payload.items ?? []);
     } catch (caught) {
-      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "알림 조회 실패" });
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "기록 조회 실패" });
     } finally {
       setHistoryLoading(false);
     }
@@ -273,10 +273,10 @@ export function DiscoveryConsole() {
           </div>
           <div className="control-actions">
             <div className="history-control">
-              <button className="history-button" onClick={toggleHistory} aria-expanded={historyOpen}>알림</button>
+              <button className="history-button" onClick={toggleHistory} aria-expanded={historyOpen}>기록</button>
               {historyOpen && (
                 <div className="history-popover" style={{ width: 470, maxHeight: 500, overflowY: "auto" }}>
-                  <strong>처리 알림</strong>
+                  <strong>처리 기록</strong>
                   {historyLoading ? (
                     <div className="history-empty">불러오는 중…</div>
                   ) : historyItems.length ? (
@@ -424,7 +424,7 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
 
 function historyTitle(item: AutomationHistoryItem) {
   const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
-  return `${historyTime(item)} · ${action} ${item.candidateCount}명${item.status === "pending" ? " 진행 중" : " 완료"}`;
+  return `${action} ${item.candidateCount}명${item.status === "pending" ? " 진행 중" : " 완료"}`;
 }
 
 function historyResultLine(item: AutomationHistoryItem) {
@@ -446,6 +446,9 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
   if (item.status === "pending") return null;
   return (
     <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2" }}>
+      <span style={{ display: "block", marginBottom: 7, color: "#6b7684", fontSize: 11 }}>
+        {historyTime(item)} · 처리 {item.candidateCount}명
+      </span>
       {!item.exactSnapshot && (
         <span style={{ display: "block", marginBottom: 7, color: "#8b95a1", fontSize: 11 }}>
           이전 실행 기록 · 현재 저장 상태 기준
