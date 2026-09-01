@@ -1,8 +1,8 @@
-import type { CandidateStatus, DiscoveryCandidate, SearchCategory, SearchProviderName } from "@/lib/discovery/types";
+import type { DiscoveryCandidate, SearchCategory, SearchProviderName } from "@/lib/discovery/types";
 import { getSupabaseAdmin } from "./admin";
 
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "contacted"]);
-const VISIBLE_STATUSES = ["search_qualified", "needs_review", "qualified", "contacted"];
+const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified", "contacted"];
 
 export async function findExistingHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
@@ -37,11 +37,11 @@ export async function listCandidates(category: SearchCategory) {
     evidenceUrl: String(row.evidence_url ?? row.profile_url),
     evidenceText: String(row.evidence_text ?? ""),
     evidenceKind: row.evidence_kind === "content" ? "content" : "profile",
-    candidateStatus: String(row.discovery_status) === "needs_review" ? "needs_review" : "search_qualified",
+    candidateStatus: String(row.discovery_status) === "search_qualified" || String(row.discovery_status) === "qualified" || String(row.discovery_status) === "contacted" ? "search_qualified" : "needs_review",
     targetSignals: stringArray(row.target_signals),
     koreaSignals: stringArray(row.korea_signals),
     rejectReasons: [],
-    flags: stringArray(row.flags).filter((flag) => !flag.startsWith("제외:")),
+    flags: legacyAwareFlags(row.flags, row.discovery_status),
     followers: numberOrNull(row.followers),
     reelAverage: numberOrNull(row.reel_average),
     reelMedian: numberOrNull(row.reel_median),
@@ -76,6 +76,12 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
 
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function legacyAwareFlags(value: unknown, status: unknown) {
+  const flags = stringArray(value).filter((flag) => !flag.startsWith("제외:"));
+  if (String(status) === "discovered" && !flags.includes("기존 결과·재검증 필요")) flags.unshift("기존 결과·재검증 필요");
+  return flags;
 }
 
 function numberOrNull(value: unknown) {
