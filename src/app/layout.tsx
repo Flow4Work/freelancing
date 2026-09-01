@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko">
+    <html lang="ko" style={{ scrollbarGutter: "stable" }}>
       <body>{children}</body>
     </html>
   );
