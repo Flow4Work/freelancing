@@ -87,7 +87,9 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
     rejectReasons.push("사업체형 ID");
   }
 
-  if (DOCTOR_PATTERNS.some((pattern) => pattern.test(combined))) {
+  // 게시물 본문에는 리뷰 대상 의사/병원명이 자주 등장하므로,
+  // 의사 판정은 프로필형 검색 결과에서만 hard reject 한다.
+  if (input.evidenceKind === "profile" && DOCTOR_PATTERNS.some((pattern) => pattern.test(combined))) {
     rejectReasons.push("의사/병원장 계정");
   }
 
