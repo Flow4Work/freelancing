@@ -1,13 +1,14 @@
 import type { DiscoveryCandidate, DuplicateCheckStatus, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import { getCandidateViewState } from "@/lib/discovery/presentation";
 import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
-// 검토 중이면서 Instagram 미검증인 후보만 다음 검색에서 근거를 더 받는다.
-// 유력/검증완료/명백한 제외/비공개/컨택완료는 재발굴로 덮어쓰지 않는다.
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "hard_reject", "qualified", "private", "contacted"]);
 const FINAL_VERIFICATION_STATUSES = new Set(["verified", "insufficient", "private", "rejected", "hard_reject"]);
 const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
+
+export type CandidateAutomationMode = "duplicate" | "instagram";
 
 export async function findExistingHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
@@ -214,10 +215,24 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   }
 }
 
-export async function getVerificationCandidates(category: SearchCategory, handles: string[]) {
+export async function getAutomationCandidates(
+  category: SearchCategory,
+  handles: string[],
+  mode: CandidateAutomationMode,
+) {
   const requested = new Set(handles.map((handle) => handle.toLowerCase()));
   const candidates = await listCandidates(category);
-  return candidates.filter((candidate) => requested.has(candidate.handle) && candidate.verificationStatus === "needs_instagram");
+
+  return candidates.filter((candidate) => {
+    if (!requested.has(candidate.handle)) return false;
+    const state = getCandidateViewState(candidate);
+    if (mode === "duplicate") return state === "qualified";
+    return state === "priority";
+  });
+}
+
+export async function getVerificationCandidates(category: SearchCategory, handles: string[]) {
+  return getAutomationCandidates(category, handles, "instagram");
 }
 
 async function findContactedHandles(handles: string[]) {
