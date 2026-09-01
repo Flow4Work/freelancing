@@ -1,5 +1,6 @@
 import { extractInstagramCandidate } from "./instagram";
 import { assessCandidate } from "./quality";
+import { decideVerification } from "@/lib/verification/decision";
 import { computeReelMetrics } from "@/lib/verification/metrics";
 
 export function runQualitySelfCheck() {
@@ -51,6 +52,15 @@ export function runQualitySelfCheck() {
   });
   check("business hard rejected", business.candidateStatus === "hard_reject");
 
+  const oliveYoung = assessCandidate({
+    handle: "oliveyoung_japan",
+    evidenceKind: "profile",
+    title: "OLIVE YOUNG JAPAN",
+    text: "韓国コスメ 美容 スキンケア",
+    category: "beauty",
+  });
+  check("known Olive Young official handle rejected", oliveYoung.candidateStatus === "hard_reject");
+
   const creator = assessCandidate({
     handle: "ayamitakagi325",
     evidenceKind: "profile",
@@ -89,6 +99,49 @@ export function runQualitySelfCheck() {
   ]);
   check("Reel arithmetic mean computed by app", metrics.average === 3000 && metrics.sampleSize === 5 && metrics.totalConsidered === 6);
   check("five Reel views is sufficient sample", metrics.status === "ready");
+
+  const lowAccountMetrics = computeReelMetrics([
+    { url: "a1", postedAt: null, views: 370 },
+    { url: "a2", postedAt: null, views: 455 },
+    { url: "a3", postedAt: null, views: 1695 },
+    { url: "a4", postedAt: null, views: 497 },
+    { url: "a5", postedAt: null, views: 1680 },
+    { url: "a6", postedAt: null, views: 509 },
+    { url: "a7", postedAt: null, views: 760 },
+    { url: "a8", postedAt: null, views: 610 },
+    { url: "a9", postedAt: null, views: 252 },
+  ]);
+  check("773 example arithmetic mean is 759 rounded", lowAccountMetrics.average === 759 && lowAccountMetrics.sampleSize === 9);
+
+  const lowAccountDecision = decideVerification({
+    category: "beauty",
+    duplicateStatus: "available",
+    exists: true,
+    isPrivate: false,
+    isPersonalCreator: true,
+    followers: 35,
+    recentActivity: true,
+    japaneseTarget: true,
+    koreaConnection: true,
+    categoryRelevant: true,
+    reelMetrics: lowAccountMetrics,
+  });
+  check("35 follower account can never be qualified", lowAccountDecision.discoveryStatus === "hard_reject");
+
+  const duplicateDecision = decideVerification({
+    category: "beauty",
+    duplicateStatus: "duplicate",
+    exists: null,
+    isPrivate: null,
+    isPersonalCreator: null,
+    followers: null,
+    recentActivity: null,
+    japaneseTarget: null,
+    koreaConnection: null,
+    categoryRelevant: null,
+    reelMetrics: computeReelMetrics([]),
+  });
+  check("FixUp duplicate never reaches Instagram qualification", duplicateDecision.discoveryStatus === "hard_reject");
 
   return { ok: failures.length === 0, failures };
 
