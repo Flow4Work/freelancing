@@ -4,6 +4,16 @@ import { getSupabaseAdmin } from "./admin";
 
 export type VerificationJobKind = "duplicate" | "instagram";
 
+export type RecentVerificationJob = {
+  id: string;
+  category: SearchCategory;
+  handles: string[];
+  status: "pending" | "completed";
+  createdAt: string;
+  completedAt: string | null;
+  jobKind: VerificationJobKind;
+};
+
 export async function createVerificationJob(
   category: SearchCategory,
   handles: string[],
@@ -23,6 +33,30 @@ export async function createVerificationJob(
 
   if (error || !data?.id) throw new Error(`작업 생성 실패: ${error?.message ?? "job id 없음"}`);
   return String(data.id);
+}
+
+export async function listRecentVerificationJobs(category: SearchCategory, limit = 5): Promise<RecentVerificationJob[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
+
+  const { data, error } = await supabase
+    .from("creator_verification_jobs")
+    .select("id, category, handles, status, created_at, completed_at, job_kind")
+    .eq("category", category)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw new Error(`작업 기록 조회 실패: ${error.message}`);
+
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    category,
+    handles: normalizeHandles(Array.isArray(row.handles) ? row.handles.map(String) : []),
+    status: row.status === "completed" ? "completed" : "pending",
+    createdAt: String(row.created_at),
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+    jobKind: row.job_kind === "duplicate" ? "duplicate" : "instagram",
+  }));
 }
 
 export async function assertVerificationJob(
