@@ -3,6 +3,7 @@ export type SearchProviderName = "exa" | "tavily";
 export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject";
 export type VerificationStatus = "needs_instagram" | "verified" | "insufficient" | "private" | "rejected" | "hard_reject";
 export type ReelMetricsStatus = "not_checked" | "ready" | "insufficient";
+export type DuplicateCheckStatus = "not_checked" | "available" | "duplicate" | "protected" | "unknown";
 
 export type RawSearchResult = {
   provider: SearchProviderName;
@@ -30,6 +31,9 @@ export type DiscoveryCandidate = {
   koreaSignals: string[];
   rejectReasons: string[];
   flags: string[];
+  duplicateCheckStatus: DuplicateCheckStatus;
+  duplicateCheckMessage: string | null;
+  duplicateCheckedAt: string | null;
   bio: string | null;
   followers: number | null;
   reelAverage: number | null;
