@@ -28,4 +28,26 @@ create index if not exists creator_candidates_verification_idx on public.creator
 
 alter table public.creator_candidates enable row level security;
 
-comment on table public.creator_candidates is 'FixUp creator discovery history. Server-side service role is used in phase 1; no public RLS policy is created.';
+drop policy if exists "fixup_scout_select_candidates" on public.creator_candidates;
+create policy "fixup_scout_select_candidates"
+on public.creator_candidates
+for select
+to anon
+using (true);
+
+drop policy if exists "fixup_scout_insert_candidates" on public.creator_candidates;
+create policy "fixup_scout_insert_candidates"
+on public.creator_candidates
+for insert
+to anon
+with check (true);
+
+drop policy if exists "fixup_scout_update_candidates" on public.creator_candidates;
+create policy "fixup_scout_update_candidates"
+on public.creator_candidates
+for update
+to anon
+using (true)
+with check (true);
+
+comment on table public.creator_candidates is 'FixUp Scout creator discovery history. Stores public creator discovery metadata for duplicate prevention.';
