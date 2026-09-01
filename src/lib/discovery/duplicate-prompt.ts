@@ -11,12 +11,9 @@ export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], cate
 
 규칙:
 - 후보별 ID 입력 → "중복 확인 / 重複確認" 클릭 → 화면의 실제 결과 문구만 판정
-- 등록 가능 → available
-- 이미 등록 → duplicate
-- 관리자 보호 목록 → protected
-- 그 외/확인 불가 → unknown
-- "등록하기 / 登録する" 클릭 금지
-- 새 로그인, Instagram 탐색, 후보 외 계정 탐색 금지
+- 등록 가능 → available / 이미 등록 → duplicate / 관리자 보호 목록 → protected / 그 외 → unknown
+- 현재 세션으로 페이지 진입 불가하면 새 로그인하지 말고 전부 unknown
+- "등록하기 / 登録する" 클릭, Instagram 탐색, 후보 외 탐색 금지
 
 후보:
 ${ids}
