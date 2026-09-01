@@ -99,7 +99,8 @@ async function searchWithFallback(query: string, providers: SearchProvider[], st
   for (let attempt = 0; attempt < providers.length; attempt += 1) {
     const provider = providers[(startIndex + attempt) % providers.length];
     try {
-      return await provider.search(query, 12);
+      // 검색 호출 수를 늘리지 않고 query당 recall을 높인다.
+      return await provider.search(query, 18);
     } catch (error) {
       lastError = error;
     }
