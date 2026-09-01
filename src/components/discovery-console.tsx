@@ -33,6 +33,7 @@ const PROGRESS_STAGES = [
 
 const RECOMMENDED_BADGE_STYLE = { color: "#d6336c", background: "#fff0f6" };
 const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" };
+const ACTION_SLOT_WIDTH = 118;
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -246,16 +247,22 @@ export function DiscoveryConsole() {
               <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증 완료</button>
               <button className={statusFilter === "dm_ready" ? "active" : ""} onClick={() => setStatusFilter("dm_ready")}>DM 준비</button>
             </div>
-            {action && (
-              <button
-                className="secondary action-button"
-                style={action.mode === "instagram" ? { background: "#dc2626" } : undefined}
-                onClick={() => runAutomation(action.mode)}
-                disabled={automationLoading || !filteredCandidates.length}
-              >
-                {automationLoading ? "OpenCode 실행 중…" : action.label}
-              </button>
-            )}
+            <div style={{ width: ACTION_SLOT_WIDTH, flex: `0 0 ${ACTION_SLOT_WIDTH}px` }}>
+              {action && (
+                <button
+                  className="secondary action-button"
+                  style={{
+                    width: "100%",
+                    whiteSpace: "nowrap",
+                    ...(action.mode === "instagram" ? { background: "#dc2626" } : {}),
+                  }}
+                  onClick={() => runAutomation(action.mode)}
+                  disabled={automationLoading || !filteredCandidates.length}
+                >
+                  {automationLoading ? "실행 중…" : action.label}
+                </button>
+              )}
+            </div>
           </div>
         </div>
         {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} getState={candidateState} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
@@ -270,14 +277,14 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>Instagram</th><th style={{ width: 128 }}>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>중복</th><th>검증</th></tr></thead>
+        <thead><tr><th>Instagram</th><th style={{ width: 154 }}>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>중복</th><th>검증</th></tr></thead>
         <tbody>
           {candidates.map((candidate) => {
             const state = getState(candidate);
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
                 <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
-                <td><CandidateStateBadges state={state} /></td>
+                <td><CandidateStateBadges state={state} candidate={candidate} /></td>
                 <td className="status">{metricLabel(candidate)}</td>
                 <td><div className="evidence-one-line" title={candidate.verificationNote ?? candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
@@ -291,13 +298,27 @@ function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandida
   );
 }
 
-function CandidateStateBadges({ state }: { state: CandidateViewState }) {
+function CandidateStateBadges({ state, candidate }: { state: CandidateViewState; candidate: DiscoveryCandidate }) {
+  const source = state === "duplicate_passed" ? duplicateSourceBadge(candidate) : null;
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "nowrap" }}>
       <span className={`candidate-state ${stateTone(state)}`} style={state === "recommended" ? RECOMMENDED_BADGE_STYLE : undefined}>{stateLabel(state)}</span>
-      {state === "duplicate_passed" && <span className="candidate-state" style={DUPLICATE_PENDING_BADGE_STYLE}>검증 필요</span>}
+      {source && (
+        <span
+          className={`candidate-state ${source.tone}`}
+          style={source.tone === "recommended" ? RECOMMENDED_BADGE_STYLE : DUPLICATE_PENDING_BADGE_STYLE}
+        >
+          {source.label}
+        </span>
+      )}
     </div>
   );
+}
+
+function duplicateSourceBadge(candidate: DiscoveryCandidate) {
+  if (candidate.candidateStatus === "search_qualified") return { label: "추천 후보", tone: "recommended" };
+  if (candidate.candidateStatus === "needs_review") return { label: "검증 필요", tone: "review" };
+  return null;
 }
 
 function stateLabel(state: CandidateViewState) {
