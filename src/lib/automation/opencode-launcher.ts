@@ -49,7 +49,7 @@ $PromptFile = ${psQuote(promptPath)}
 $ReadyFile = ${psQuote(readyPath)}
 
 try {
-  $ResolvedOpenCode = Get-Command $OpenCode -ErrorAction Stop
+  $null = Get-Command $OpenCode -ErrorAction Stop
   $Prompt = [IO.File]::ReadAllText($PromptFile, [Text.Encoding]::UTF8)
   if ([string]::IsNullOrWhiteSpace($Prompt)) {
     throw "FixUp Scout 프롬프트가 비어 있습니다."
@@ -60,7 +60,7 @@ try {
   Write-Host "[FixUp Scout] OpenCode TUI를 시작합니다. 작업 프롬프트가 자동으로 전달됩니다." -ForegroundColor DarkGray
   Write-Host ""
 
-  & $ResolvedOpenCode.Source --prompt $Prompt
+  & $OpenCode --prompt $Prompt
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
   if ($Code -ne 0) {
@@ -71,6 +71,7 @@ try {
   Write-Host "[FixUp Scout] OpenCode가 종료되었습니다. Scout 화면의 결과 반영 여부를 확인하세요." -ForegroundColor Green
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $ReadyFile -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
 }
 catch {
   Write-Host ""
@@ -85,7 +86,7 @@ catch {
 
   const child = spawn(
     "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
     {
       cwd: process.cwd(),
       detached: true,
