@@ -22,6 +22,12 @@ type AutomationRunResponse = {
   error?: string;
 };
 
+type AutomationHistoryGroup = {
+  destination: string;
+  handles: string[];
+  reasons: Array<{ handle: string; reason: string }>;
+};
+
 type AutomationHistoryItem = {
   id: string;
   mode: AutomationMode;
@@ -33,6 +39,8 @@ type AutomationHistoryItem = {
   destinationCount: number;
   excludedCount: number;
   unresolvedCount: number;
+  groups: AutomationHistoryGroup[];
+  exactSnapshot: boolean;
 };
 
 type AutomationHistoryResponse = {
@@ -70,6 +78,7 @@ export function DiscoveryConsole() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyItems, setHistoryItems] = useState<AutomationHistoryItem[]>([]);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/health")
@@ -84,6 +93,7 @@ export function DiscoveryConsole() {
     setStatusFilter("all");
     setHistoryOpen(false);
     setHistoryItems([]);
+    setExpandedHistoryId(null);
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -175,10 +185,10 @@ export function DiscoveryConsole() {
     try {
       const response = await fetch(`/api/automation/run?category=${category}`, { cache: "no-store" });
       const payload = await response.json() as AutomationHistoryResponse;
-      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "기록 조회 실패");
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "알림 조회 실패");
       setHistoryItems(payload.items ?? []);
     } catch (caught) {
-      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "기록 조회 실패" });
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "알림 조회 실패" });
     } finally {
       setHistoryLoading(false);
     }
@@ -187,6 +197,7 @@ export function DiscoveryConsole() {
   async function toggleHistory() {
     if (historyOpen) {
       setHistoryOpen(false);
+      setExpandedHistoryId(null);
       return;
     }
     setHistoryOpen(true);
@@ -236,6 +247,7 @@ export function DiscoveryConsole() {
 
       setAutomationWatchUntil(Date.now() + 10 * 60 * 1000);
       setHistoryOpen(false);
+      setExpandedHistoryId(null);
       setToast({
         kind: "success",
         message: `${mode === "duplicate" ? "중복 확인" : "최종 검증"} 시작 · ${payload.candidateCount ?? handles.length}명`,
@@ -260,22 +272,50 @@ export function DiscoveryConsole() {
             <input id="target" type="number" min={10} max={300} value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} />
           </div>
           <div className="control-actions">
-            <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
             <div className="history-control">
-              <button className="history-button" onClick={toggleHistory}>기록</button>
+              <button className="history-button" onClick={toggleHistory} aria-expanded={historyOpen}>알림</button>
               {historyOpen && (
-                <div className="history-popover">
-                  <strong>최근 처리 기록</strong>
+                <div className="history-popover" style={{ width: 470, maxHeight: 500, overflowY: "auto" }}>
+                  <strong>처리 알림</strong>
                   {historyLoading ? (
                     <div className="history-empty">불러오는 중…</div>
                   ) : historyItems.length ? (
-                    historyItems.map((item) => <div className="history-item" key={item.id}>{historyLabel(item)}</div>)
+                    historyItems.map((item) => {
+                      const expanded = expandedHistoryId === item.id;
+                      return (
+                        <button
+                          type="button"
+                          className="history-item"
+                          key={item.id}
+                          aria-expanded={expanded}
+                          onClick={() => setExpandedHistoryId(expanded ? null : item.id)}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            borderTop: 0,
+                            borderLeft: 0,
+                            borderRight: 0,
+                            background: "transparent",
+                            color: "inherit",
+                            cursor: "pointer",
+                            font: "inherit",
+                            textAlign: "left",
+                            whiteSpace: "normal",
+                          }}
+                        >
+                          <span style={{ display: "block", color: "#333d4b", fontWeight: 800 }}>{historyTitle(item)}</span>
+                          <span style={{ display: "block", marginTop: 3, color: "#6b7684", lineHeight: 1.45 }}>{historyResultLine(item)}</span>
+                          {expanded && <HistoryDetail item={item} />}
+                        </button>
+                      );
+                    })
                   ) : (
                     <div className="history-empty">아직 실행 기록이 없습니다.</div>
                   )}
                 </div>
               )}
             </div>
+            <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
           </div>
         </div>
 
@@ -382,18 +422,50 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
   return null;
 }
 
-function historyLabel(item: AutomationHistoryItem) {
-  const time = new Intl.DateTimeFormat("ko-KR", {
+function historyTitle(item: AutomationHistoryItem) {
+  const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
+  return `${historyTime(item)} · ${action} ${item.candidateCount}명${item.status === "pending" ? " 진행 중" : " 완료"}`;
+}
+
+function historyResultLine(item: AutomationHistoryItem) {
+  if (item.status === "pending") return "결과를 기다리는 중입니다.";
+  if (!item.groups.length) return "처리 결과가 없습니다.";
+  return item.groups.map((group) => `${group.destination} ${group.handles.length}`).join(" · ");
+}
+
+function historyTime(item: AutomationHistoryItem) {
+  return new Intl.DateTimeFormat("ko-KR", {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(item.completedAt ?? item.createdAt));
-  const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
-  if (item.status === "pending") return `${time} · ${action} ${item.candidateCount}명 · 진행 중`;
-  const excluded = item.excludedCount ? ` · 제외 ${item.excludedCount}` : "";
-  const unresolved = item.unresolvedCount ? ` · 미반영 ${item.unresolvedCount}` : "";
-  return `${time} · ${action} ${item.candidateCount}명 → ${item.destination} ${item.destinationCount}${excluded}${unresolved}`;
+}
+
+function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
+  if (item.status === "pending") return null;
+  return (
+    <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2" }}>
+      {!item.exactSnapshot && (
+        <span style={{ display: "block", marginBottom: 7, color: "#8b95a1", fontSize: 11 }}>
+          이전 실행 기록 · 현재 저장 상태 기준
+        </span>
+      )}
+      {item.groups.map((group) => (
+        <span key={group.destination} style={{ display: "block", marginBottom: 9 }}>
+          <span style={{ display: "block", color: "#333d4b", fontWeight: 800 }}>{group.destination} {group.handles.length}명</span>
+          <span style={{ display: "block", marginTop: 2, color: "#6b7684", lineHeight: 1.45 }}>
+            {group.handles.map((handle) => `@${handle}`).join(", ")}
+          </span>
+          {group.reasons.length > 0 && (
+            <span style={{ display: "block", marginTop: 4, color: "#8a5b00", lineHeight: 1.45 }}>
+              {group.reasons.map((row) => `@${row.handle} — ${row.reason}`).join(" · ")}
+            </span>
+          )}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function stateLabel(state: CandidateViewState) {
