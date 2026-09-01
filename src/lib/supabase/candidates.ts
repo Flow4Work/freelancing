@@ -3,7 +3,9 @@ import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
-const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "private", "contacted"]);
+// 검토 중인 후보는 다음 검색에서 새 근거를 더 받을 수 있게 막지 않는다.
+// 유력/검증완료/명백한 제외/비공개/컨택완료만 재발굴을 차단한다.
+const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "hard_reject", "qualified", "private", "contacted"]);
 const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
 
 export async function findExistingHandles(handles: string[]) {
@@ -12,7 +14,6 @@ export async function findExistingHandles(handles: string[]) {
 
   const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
   const blocked = new Set<string>();
-
   const { data, error } = await supabase
     .from("creator_candidates")
     .select("normalized_handle, discovery_status")
@@ -29,6 +30,71 @@ export async function findExistingHandles(handles: string[]) {
   const contacted = await findContactedHandles(normalized);
   contacted.forEach((handle) => blocked.add(handle));
   return blocked;
+}
+
+export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandidate[], category: SearchCategory) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !candidates.length) return candidates;
+
+  const handles = [...new Set(candidates.map((candidate) => candidate.handle))];
+  const { data, error } = await supabase
+    .from("creator_candidates")
+    .select("normalized_handle, source_provider, evidence_url, evidence_text, evidence_kind, flags, discovery_status")
+    .eq("category", category)
+    .in("normalized_handle", handles)
+    .in("discovery_status", ["discovered", "needs_review"]);
+
+  if (error) {
+    console.warn("supabase_review_evidence_merge_failed", error.message);
+    return candidates;
+  }
+
+  const previous = new Map((data ?? []).map((row) => [String(row.normalized_handle), row]));
+
+  return candidates.map((candidate) => {
+    const prior = previous.get(candidate.handle);
+    if (!prior) return candidate;
+
+    const priorText = String(prior.evidence_text ?? "");
+    const priorKind = prior.evidence_kind === "profile" ? "profile" : "content";
+    const evidenceKind = candidate.evidenceKind === "profile" || priorKind === "profile" ? "profile" : "content";
+    const combinedText = mergeEvidenceText(priorText, candidate.evidenceText);
+    const profileText = mergeEvidenceText(
+      priorKind === "profile" ? priorText : "",
+      candidate.evidenceKind === "profile" ? candidate.evidenceText : "",
+      1600,
+    );
+
+    const assessment = assessCandidate({
+      handle: candidate.handle,
+      evidenceKind,
+      title: "",
+      text: combinedText,
+      profileText,
+      category,
+    });
+
+    const preservedReviewFlags = [
+      ...stringArray(prior.flags),
+      ...candidate.flags,
+    ].filter((flag) => flag.startsWith("제외검토:"));
+
+    const usePriorPrimary = priorKind === "profile" && candidate.evidenceKind !== "profile";
+
+    return {
+      ...candidate,
+      sourceProvider: usePriorPrimary ? normalizeProvider(prior.source_provider) : candidate.sourceProvider,
+      evidenceUrl: usePriorPrimary ? String(prior.evidence_url ?? candidate.evidenceUrl) : candidate.evidenceUrl,
+      evidenceText: combinedText,
+      evidenceKind,
+      candidateStatus: assessment.candidateStatus,
+      targetSignals: assessment.targetSignals,
+      koreaSignals: assessment.koreaSignals,
+      rejectReasons: assessment.rejectReasons,
+      flags: [...new Set([...assessment.flags, ...preservedReviewFlags])],
+      verificationStatus: assessment.candidateStatus === "hard_reject" ? "hard_reject" : "needs_instagram",
+    };
+  });
 }
 
 export async function listCandidates(category: SearchCategory) {
@@ -58,7 +124,6 @@ export async function listCandidates(category: SearchCategory) {
     const rawStatus = String(row.discovery_status);
     const evidenceKind = row.evidence_kind === "content" ? "content" : "profile";
     const evidenceText = String(row.evidence_text ?? "");
-
     let candidateStatus: "search_qualified" | "needs_review" = rawStatus === "search_qualified" || rawStatus === "qualified"
       ? "search_qualified"
       : "needs_review";
@@ -67,13 +132,7 @@ export async function listCandidates(category: SearchCategory) {
     let flags = stringArray(row.flags).filter((flag) => !flag.startsWith("제외:") && flag !== "기존 결과·재검증 필요");
 
     if (rawStatus === "discovered") {
-      const assessment = assessCandidate({
-        handle,
-        evidenceKind,
-        title: "",
-        text: evidenceText,
-        category,
-      });
+      const assessment = assessCandidate({ handle, evidenceKind, title: "", text: evidenceText, category });
       if (assessment.candidateStatus === "hard_reject") return [];
       candidateStatus = assessment.candidateStatus === "search_qualified" ? "search_qualified" : "needs_review";
       targetSignals = assessment.targetSignals;
@@ -154,7 +213,6 @@ export async function getVerificationCandidates(category: SearchCategory, handle
 async function findContactedHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
-
   const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
   const { data, error } = await supabase
     .from("creator_contacted_handles")
@@ -165,8 +223,13 @@ async function findContactedHandles(handles: string[]) {
     console.warn("supabase_contacted_check_failed", error.message);
     return new Set<string>();
   }
-
   return new Set((data ?? []).map((row) => String(row.normalized_handle)));
+}
+
+function mergeEvidenceText(first: string, second: string, maxLength = 2400) {
+  return [...new Set([first, second].map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean))]
+    .join("\n")
+    .slice(0, maxLength);
 }
 
 function stringArray(value: unknown) {
@@ -201,10 +264,6 @@ function normalizeReelViews(value: unknown): ReelSnapshot[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 10).map((item) => {
     const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
-    return {
-      url: nullableString(row.url),
-      views: numberOrNull(row.views),
-      postedAt: nullableString(row.postedAt),
-    };
+    return { url: nullableString(row.url), views: numberOrNull(row.views), postedAt: nullableString(row.postedAt) };
   });
 }
