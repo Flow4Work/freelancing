@@ -1,5 +1,6 @@
 import { extractInstagramCandidate } from "./instagram";
 import { assessCandidate } from "./quality";
+import { computeReelMetrics } from "@/lib/verification/metrics";
 
 export function runQualitySelfCheck() {
   const failures: string[] = [];
@@ -59,6 +60,16 @@ export function runQualitySelfCheck() {
   });
   check("known creator survives", creator.candidateStatus === "search_qualified");
 
+  const mergedCreator = assessCandidate({
+    handle: "sample_creator",
+    evidenceKind: "profile",
+    title: "",
+    profileText: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信",
+    text: "韓国在住の日本人 美容好き ブロガー 韓国コスメを発信 クリニック公式アカウントの施術を体験",
+    category: "beauty",
+  });
+  check("content business mention does not poison clean profile", mergedCreator.candidateStatus === "search_qualified");
+
   const contentOnly = assessCandidate({
     handle: "somecreator",
     evidenceKind: "content",
@@ -67,6 +78,17 @@ export function runQualitySelfCheck() {
     category: "beauty",
   });
   check("content-only result never top-qualified", contentOnly.candidateStatus === "needs_review");
+
+  const metrics = computeReelMetrics([
+    { url: "r1", postedAt: "2026-08-30", views: 1000 },
+    { url: "r2", postedAt: "2026-08-29", views: 2000 },
+    { url: "r3", postedAt: "2026-08-28", views: 3000 },
+    { url: "r4", postedAt: "2026-08-27", views: 4000 },
+    { url: "r5", postedAt: "2026-08-26", views: 5000 },
+    { url: "r6", postedAt: "2026-08-25", views: null },
+  ]);
+  check("Reel arithmetic mean computed by app", metrics.average === 3000 && metrics.sampleSize === 5 && metrics.totalConsidered === 6);
+  check("five Reel views is sufficient sample", metrics.status === "ready");
 
   return { ok: failures.length === 0, failures };
 
