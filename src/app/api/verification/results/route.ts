@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { applyInstagramVerificationResults } from "@/lib/supabase/verification";
+import { assertVerificationJob, completeVerificationJob } from "@/lib/supabase/verification-jobs";
 
 export const runtime = "nodejs";
 
@@ -39,11 +40,14 @@ export async function POST(request: Request) {
   }
 
   try {
+    const handles = parsed.data.results.map((result) => result.handle);
+    await assertVerificationJob(parsed.data.jobId, parsed.data.category, handles);
     const saved = await applyInstagramVerificationResults(parsed.data.category, parsed.data.results);
+    await completeVerificationJob(parsed.data.jobId);
     return NextResponse.json({ ok: true, jobId: parsed.data.jobId, ...saved });
   } catch (error) {
     const message = error instanceof Error ? error.message : "검증 결과 저장 실패";
     console.error("verification_result_failed", error);
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, error: message }, { status: 409 });
   }
 }
