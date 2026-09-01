@@ -50,11 +50,7 @@ h1 {
   font-size: 15px;
 }
 
-.console-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin: -8px 0 10px;
-}
+.console-toolbar { display: none; }
 .settings-button,
 .icon-button {
   border: 0;
@@ -79,7 +75,7 @@ h1 {
 .control-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
+  align-items: center;
   gap: 12px;
 }
 .segment,
@@ -107,8 +103,18 @@ h1 {
   background: #fff;
   box-shadow: 0 2px 8px rgba(0,0,0,.06);
 }
-.field { display: grid; gap: 6px; }
-.field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+}
+.field label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
 .field input {
   width: 104px;
   border: 1px solid var(--line);
@@ -326,6 +332,7 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 720px) {
   .shell { width: min(100% - 20px, 1180px); padding-top: 30px; }
   .controls { padding: 16px; }
+  .field { padding: 0; }
   .primary { width: 100%; margin-left: 0; }
   .progress-box { align-items: flex-start; flex-direction: column; gap: 7px; }
   .progress-track { width: 100%; }
