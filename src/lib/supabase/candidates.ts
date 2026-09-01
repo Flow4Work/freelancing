@@ -1,4 +1,6 @@
 import type { DiscoveryCandidate, SearchCategory, SearchProviderName } from "@/lib/discovery/types";
+import { isValidHandle } from "@/lib/discovery/instagram";
+import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "contacted"]);
@@ -29,26 +31,61 @@ export async function listCandidates(category: SearchCategory) {
     console.warn("supabase_candidate_list_failed", error.message);
     return [];
   }
-  return (data ?? []).map((row): DiscoveryCandidate => ({
-    handle: String(row.normalized_handle),
-    profileUrl: String(row.profile_url),
-    category,
-    sourceProvider: normalizeProvider(row.source_provider),
-    evidenceUrl: String(row.evidence_url ?? row.profile_url),
-    evidenceText: String(row.evidence_text ?? ""),
-    evidenceKind: row.evidence_kind === "content" ? "content" : "profile",
-    candidateStatus: String(row.discovery_status) === "search_qualified" || String(row.discovery_status) === "qualified" || String(row.discovery_status) === "contacted" ? "search_qualified" : "needs_review",
-    targetSignals: stringArray(row.target_signals),
-    koreaSignals: stringArray(row.korea_signals),
-    rejectReasons: [],
-    flags: legacyAwareFlags(row.flags, row.discovery_status),
-    followers: numberOrNull(row.followers),
-    reelAverage: numberOrNull(row.reel_average),
-    reelMedian: numberOrNull(row.reel_median),
-    reelSampleSize: numberOrNull(row.reel_sample_size),
-    verificationStatus: "needs_instagram",
-    discoveredAt: String(row.first_seen_at ?? row.last_seen_at ?? new Date().toISOString()),
-  }));
+
+  return (data ?? []).flatMap((row): DiscoveryCandidate[] => {
+    const handle = String(row.normalized_handle);
+    if (!isValidHandle(handle)) return [];
+
+    const rawStatus = String(row.discovery_status);
+    const evidenceKind = row.evidence_kind === "content" ? "content" : "profile";
+    const evidenceText = String(row.evidence_text ?? "");
+
+    let candidateStatus: "search_qualified" | "needs_review" = rawStatus === "search_qualified" || rawStatus === "qualified" || rawStatus === "contacted"
+      ? "search_qualified"
+      : "needs_review";
+    let targetSignals = stringArray(row.target_signals);
+    let koreaSignals = stringArray(row.korea_signals);
+    let flags = stringArray(row.flags).filter((flag) => !flag.startsWith("제외:") && flag !== "기존 결과·재검증 필요");
+
+    // Phase-1 legacy rows were stored before the quality gate existed. Re-evaluate
+    // them from their stored evidence instead of forcing every old row to "review".
+    if (rawStatus === "discovered") {
+      const assessment = assessCandidate({
+        handle,
+        evidenceKind,
+        title: "",
+        text: evidenceText,
+        category,
+      });
+
+      if (assessment.candidateStatus === "hard_reject") return [];
+      candidateStatus = assessment.candidateStatus;
+      targetSignals = assessment.targetSignals;
+      koreaSignals = assessment.koreaSignals;
+      flags = assessment.flags;
+    }
+
+    return [{
+      handle,
+      profileUrl: String(row.profile_url),
+      category,
+      sourceProvider: normalizeProvider(row.source_provider),
+      evidenceUrl: String(row.evidence_url ?? row.profile_url),
+      evidenceText,
+      evidenceKind,
+      candidateStatus,
+      targetSignals,
+      koreaSignals,
+      rejectReasons: [],
+      flags,
+      followers: numberOrNull(row.followers),
+      reelAverage: numberOrNull(row.reel_average),
+      reelMedian: numberOrNull(row.reel_median),
+      reelSampleSize: numberOrNull(row.reel_sample_size),
+      verificationStatus: "needs_instagram",
+      discoveredAt: String(row.first_seen_at ?? row.last_seen_at ?? new Date().toISOString()),
+    }];
+  });
 }
 
 export async function saveCandidates(candidates: DiscoveryCandidate[]) {
@@ -71,17 +108,14 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
     last_seen_at: candidate.discoveredAt,
   }));
   const { error } = await supabase.from("creator_candidates").upsert(rows, { onConflict: "normalized_handle" });
-  if (error) console.warn("supabase_candidate_save_failed", error.message);
+  if (error) {
+    console.error("supabase_candidate_save_failed", error.message);
+    throw new Error(`후보 저장 실패: ${error.message}`);
+  }
 }
 
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
-}
-
-function legacyAwareFlags(value: unknown, status: unknown) {
-  const flags = stringArray(value).filter((flag) => !flag.startsWith("제외:"));
-  if (String(status) === "discovered" && !flags.includes("기존 결과·재검증 필요")) flags.unshift("기존 결과·재검증 필요");
-  return flags;
 }
 
 function numberOrNull(value: unknown) {
