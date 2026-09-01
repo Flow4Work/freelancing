@@ -3,6 +3,7 @@ import { z } from "zod";
 import { assertLocalRequest, assertOpenCodeAvailable, launchOpenCodeJob } from "@/lib/automation/opencode-launcher";
 import { buildDuplicateCheckPrompt } from "@/lib/discovery/duplicate-prompt";
 import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt";
+import { getCandidateViewState } from "@/lib/discovery/presentation";
 import { getAutomationCandidates, listCandidates } from "@/lib/supabase/candidates";
 import { createVerificationJob, listRecentVerificationJobs } from "@/lib/supabase/verification-jobs";
 
@@ -30,10 +31,14 @@ export async function GET(request: Request) {
       const destination = job.jobKind === "duplicate" ? "중복 통과" : "최종 검증 완료";
       const destinationCount = job.jobKind === "duplicate"
         ? rows.filter((candidate) => candidate?.duplicateCheckStatus === "available").length
-        : rows.filter((candidate) => candidate?.verificationStatus === "verified" || candidate?.verificationStatus === "insufficient").length;
+        : rows.filter((candidate) => candidate && getCandidateViewState(candidate) === "final_verification").length;
       const excludedCount = job.jobKind === "duplicate"
         ? rows.filter((candidate) => candidate?.duplicateCheckStatus === "duplicate" || candidate?.duplicateCheckStatus === "protected").length
-        : rows.filter((candidate) => candidate?.verificationStatus === "private" || candidate?.verificationStatus === "rejected" || candidate?.verificationStatus === "hard_reject").length;
+        : rows.filter((candidate) => {
+          if (!candidate) return false;
+          if (candidate.verificationStatus === "private" || candidate.verificationStatus === "rejected" || candidate.verificationStatus === "hard_reject") return true;
+          return candidate.verificationStatus === "verified" && getCandidateViewState(candidate) !== "final_verification";
+        }).length;
 
       return {
         id: job.id,
