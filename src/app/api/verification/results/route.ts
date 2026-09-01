@@ -13,6 +13,8 @@ const reelSchema = z.object({
 
 const resultSchema = z.object({
   handle: z.string().min(1).max(30),
+  duplicateStatus: z.enum(["available", "duplicate", "protected", "unknown"]),
+  duplicateMessage: z.string().max(500).nullable(),
   exists: z.boolean().nullable(),
   isPrivate: z.boolean().nullable(),
   isPersonalCreator: z.boolean().nullable(),
