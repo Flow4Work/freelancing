@@ -22,7 +22,12 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
 
   // Google Apps Script 중복 통과 이후에만 Instagram 최종 검증 단계로 이동한다.
   if (candidate.duplicateCheckStatus === "available") {
-    if (candidate.candidateStatus === "search_qualified" && candidate.verificationStatus === "verified") {
+    if (
+      candidate.candidateStatus === "search_qualified"
+      && candidate.verificationStatus === "verified"
+      && candidate.verifiedAt !== null
+      && candidate.verificationNote?.startsWith("현재 최소 모집조건 충족")
+    ) {
       return "dm_ready";
     }
 
