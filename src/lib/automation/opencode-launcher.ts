@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { getFixUpOpenCodeModel, getOpenCodeCommand } from "./config";
+import { getOpenCodeCommand } from "./config";
 
 export function assertLocalRequest(request: Request) {
   const hostname = new URL(request.url).hostname.toLowerCase();
@@ -28,7 +28,6 @@ export function assertOpenCodeAvailable() {
 
 export async function launchOpenCodeJob(input: { prompt: string; jobId: string; title: string }) {
   const command = getOpenCodeCommand();
-  const model = getFixUpOpenCodeModel();
   const root = path.join(tmpdir(), "fixup-scout");
   await mkdir(root, { recursive: true });
 
@@ -56,7 +55,6 @@ try { chcp 65001 > $null } catch {}
 try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · ${input.title}`)} } catch {}
 Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
-$Model = ${psQuote(model)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
@@ -71,12 +69,11 @@ try {
   }
 
   Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 모델: $Model" -ForegroundColor DarkGray
   Write-Host "[FixUp Scout] 작업 지시를 opencode run에 전달합니다." -ForegroundColor DarkGray
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile --model $Model
+  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
   if ($Code -ne 0) {
@@ -131,7 +128,7 @@ catch {
   await waitForOpenCodeInvocation(invokedPath, failedPath);
   await rm(invokedPath, { force: true });
 
-  return { command, model, promptPath, processId };
+  return { command, promptPath, processId };
 }
 
 async function waitForOpenCodeInvocation(invokedPath: string, failedPath: string) {
