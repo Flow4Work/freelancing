@@ -1,9 +1,9 @@
-import type { DiscoveryCandidate, SearchCategory, SearchProviderName } from "@/lib/discovery/types";
+import type { DiscoveryCandidate, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
 import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
-const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "contacted"]);
+const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "needs_review", "hard_reject", "qualified", "private", "contacted"]);
 const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
 
 export async function findExistingHandles(handles: string[]) {
@@ -22,15 +22,12 @@ export async function findExistingHandles(handles: string[]) {
     console.warn("supabase_duplicate_check_failed", error.message);
   } else {
     for (const row of data ?? []) {
-      if (DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))) {
-        blocked.add(String(row.normalized_handle));
-      }
+      if (DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))) blocked.add(String(row.normalized_handle));
     }
   }
 
   const contacted = await findContactedHandles(normalized);
   contacted.forEach((handle) => blocked.add(handle));
-
   return blocked;
 }
 
@@ -40,7 +37,7 @@ export async function listCandidates(category: SearchCategory) {
 
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, followers, reel_average, reel_median, reel_sample_size, discovery_status, first_seen_at, last_seen_at")
+    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
     .eq("category", category)
     .in("discovery_status", VISIBLE_STATUSES)
     .order("first_seen_at", { ascending: false })
@@ -77,7 +74,6 @@ export async function listCandidates(category: SearchCategory) {
         text: evidenceText,
         category,
       });
-
       if (assessment.candidateStatus === "hard_reject") return [];
       candidateStatus = assessment.candidateStatus === "search_qualified" ? "search_qualified" : "needs_review";
       targetSignals = assessment.targetSignals;
@@ -98,11 +94,19 @@ export async function listCandidates(category: SearchCategory) {
       koreaSignals,
       rejectReasons: [],
       flags,
+      bio: nullableString(row.bio),
       followers: numberOrNull(row.followers),
       reelAverage: numberOrNull(row.reel_average),
       reelMedian: numberOrNull(row.reel_median),
       reelSampleSize: numberOrNull(row.reel_sample_size),
-      verificationStatus: "needs_instagram",
+      reelCheckedCount: numberOrNull(row.reel_checked_count),
+      reelTotalConsidered: numberOrNull(row.reel_total_considered),
+      reelMetricsStatus: normalizeReelMetricsStatus(row.reel_metrics_status),
+      reelViews: normalizeReelViews(row.reel_views),
+      lastActivityAt: nullableString(row.last_activity_at),
+      verificationNote: nullableString(row.verification_note),
+      verificationStatus: normalizeVerificationStatus(row.verification_status),
+      verifiedAt: nullableString(row.verified_at),
       discoveredAt: String(row.first_seen_at ?? row.last_seen_at ?? new Date().toISOString()),
     }];
   });
@@ -141,6 +145,12 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   }
 }
 
+export async function getVerificationCandidates(category: SearchCategory, handles: string[]) {
+  const requested = new Set(handles.map((handle) => handle.toLowerCase()));
+  const candidates = await listCandidates(category);
+  return candidates.filter((candidate) => requested.has(candidate.handle) && candidate.verificationStatus === "needs_instagram");
+}
+
 async function findContactedHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
@@ -163,6 +173,11 @@ function stringArray(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
 }
 
+function nullableString(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  return String(value);
+}
+
 function numberOrNull(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -171,4 +186,25 @@ function numberOrNull(value: unknown) {
 
 function normalizeProvider(value: unknown): SearchProviderName {
   return value === "tavily" ? "tavily" : "exa";
+}
+
+function normalizeVerificationStatus(value: unknown): VerificationStatus {
+  const allowed: VerificationStatus[] = ["needs_instagram", "verified", "insufficient", "private", "rejected", "hard_reject"];
+  return allowed.includes(value as VerificationStatus) ? value as VerificationStatus : "needs_instagram";
+}
+
+function normalizeReelMetricsStatus(value: unknown): ReelMetricsStatus {
+  return value === "ready" || value === "insufficient" ? value : "not_checked";
+}
+
+function normalizeReelViews(value: unknown): ReelSnapshot[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 10).map((item) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      url: nullableString(row.url),
+      views: numberOrNull(row.views),
+      postedAt: nullableString(row.postedAt),
+    };
+  });
 }
