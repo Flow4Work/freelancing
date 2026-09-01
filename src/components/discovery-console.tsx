@@ -214,7 +214,7 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
                 </span>
               </td>
               <td className="status">{metricLabel(candidate)}</td>
-              <td><div className="evidence-one-line" title={candidate.evidenceText}>{candidate.evidenceText || "프로필 확인 필요"}</div></td>
+              <td><div className="evidence-one-line" title={candidate.evidenceText}>{evidenceSummary(candidate)}</div></td>
               <td><div className="flag-one-line" title={candidate.flags.join(" · ")}>{candidate.flags.length ? candidate.flags.join(" · ") : "-"}</div></td>
               <td className="status">Instagram 실측 대기</td>
             </tr>
@@ -223,6 +223,20 @@ function CandidateTable({ candidates }: { candidates: DiscoveryCandidate[] }) {
       </table>
     </div>
   );
+}
+
+function evidenceSummary(candidate: DiscoveryCandidate) {
+  const topic = candidate.category === "beauty" ? "미용" : "맛집";
+  const target = candidate.targetSignals[0] ?? null;
+  const korea = candidate.koreaSignals.filter((signal) => !(target === "한국거주 일본인" && signal === "한국 거주")).slice(0, 2);
+
+  if (target && korea.length) return `${target} · ${korea.join("·")} · ${topic} 콘텐츠 확인`;
+  if (target) return `${target} 확인 · 한국 ${topic} 접점 추가 확인 필요`;
+  if (korea.length) return `${korea.join("·")} ${topic} 콘텐츠 확인 · 일본 타깃 여부 확인 필요`;
+
+  const followers = candidate.evidenceText.match(/([\d,.]+\s*[KkMm]?)\s+Followers?/i)?.[1];
+  if (followers) return `팔로워 ${followers} 검색 근거 확인 · 일본/한국 적합성 재확인 필요`;
+  return `${topic} 후보 · Instagram 프로필 원본 확인 필요`;
 }
 
 function metricLabel(candidate: DiscoveryCandidate) {
