@@ -3,6 +3,7 @@ import type { CandidateStatus, SearchCategory } from "./types";
 
 const HANDLE_BUSINESS_PATTERNS = [
   /official/i,
+  /^oliveyoung_japan$/i,
   /clinic|hospital|medical|derm|hifuka|pharmacy|massage|esthe|aesthetics?|recruit|academy/i,
   /(?:^|[._-])(?:salon|shop|store|corp|company)(?:$|[._-])/i,
   /beauty_product/i,
