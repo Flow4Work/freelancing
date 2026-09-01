@@ -18,7 +18,7 @@ const PROGRESS_STAGES = [
   "계정별 검색 근거 합치는 중",
   "공식·사업체 계정 제거 중",
   "일본 타깃·한국 접점 확인 중",
-  "신규 후보 저장 중",
+  "신규/보강 후보 저장 중",
 ];
 
 export function DiscoveryConsole() {
@@ -130,7 +130,7 @@ export function DiscoveryConsole() {
       if (!response.ok) throw new Error(payload.error ?? "검색에 실패했습니다.");
       setResult(payload);
       await reloadCandidates(category);
-      setToast({ kind: "success", message: `${payload.runNo}차 검색 · 신규 ${payload.candidates.length}명 추가` });
+      setToast({ kind: "success", message: `${payload.runNo}차 검색 · ${payload.candidates.length}명 신규/근거 보강` });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "검색에 실패했습니다.";
       setError(message);
@@ -206,7 +206,7 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검토 ${reviewTotal} · 검증 ${verifiedTotal}${result ? ` · 이번 +${result.candidates.length}` : ""}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${candidates.length} · 유력 ${qualifiedTotal} · 검토 ${reviewTotal} · 검증 ${verifiedTotal}${result ? ` · 이번 처리 ${result.candidates.length}` : ""}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
@@ -267,9 +267,8 @@ function metricLabel(candidate: DiscoveryCandidate) {
   if (candidate.reelAverage === null) return candidate.followers === null ? "실측 대기" : `${followers} / Reels -`;
   const checked = candidate.reelCheckedCount ?? candidate.reelSampleSize ?? 0;
   const total = candidate.reelTotalConsidered ?? checked;
-  const sample = `${checked}/${total}`;
   const suffix = candidate.reelMetricsStatus === "insufficient" ? " · 표본 부족" : "";
-  return `${followers} / 평균 ${candidate.reelAverage.toLocaleString()} (${sample})${suffix}`;
+  return `${followers} / 평균 ${candidate.reelAverage.toLocaleString()} (${checked}/${total})${suffix}`;
 }
 
 function verificationLabel(candidate: DiscoveryCandidate) {
