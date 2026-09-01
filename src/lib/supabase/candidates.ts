@@ -1,12 +1,10 @@
 import type { DiscoveryCandidate, DuplicateCheckStatus, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
-import { isValidHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
 const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "hard_reject", "qualified", "private", "contacted"]);
 const FINAL_VERIFICATION_STATUSES = new Set(["verified", "insufficient", "private", "rejected", "hard_reject"]);
-const VISIBLE_STATUSES = ["discovered", "search_qualified", "needs_review", "qualified"];
 
 export type CandidateAutomationMode = "duplicate" | "instagram";
 
@@ -113,7 +111,6 @@ export async function listCandidates(category: SearchCategory) {
     .from("creator_candidates")
     .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
     .eq("category", category)
-    .in("discovery_status", VISIBLE_STATUSES)
     .order("first_seen_at", { ascending: false })
     .limit(1000);
 
@@ -123,32 +120,27 @@ export async function listCandidates(category: SearchCategory) {
   }
 
   const handles = (data ?? []).map((row) => String(row.normalized_handle));
-  const contacted = await findContactedHandles(handles);
+  const [contacted, pendingInstagram] = await Promise.all([
+    findContactedHandles(handles),
+    findPendingInstagramHandles(category),
+  ]);
 
-  return (data ?? []).flatMap((row): DiscoveryCandidate[] => {
+  return (data ?? []).map((row): DiscoveryCandidate => {
     const handle = String(row.normalized_handle);
-    if (!isValidHandle(handle) || contacted.has(handle)) return [];
-
     const rawStatus = String(row.discovery_status);
+    const rawVerificationStatus = String(row.verification_status);
+    const rawDuplicateStatus = row.duplicate_check_status === null || row.duplicate_check_status === undefined
+      ? "not_checked"
+      : String(row.duplicate_check_status);
     const evidenceKind = row.evidence_kind === "content" ? "content" : "profile";
     const evidenceText = String(row.evidence_text ?? "");
-    let candidateStatus: "search_qualified" | "needs_review" = rawStatus === "search_qualified" || rawStatus === "qualified"
+    const candidateStatus: DiscoveryCandidate["candidateStatus"] = rawStatus === "search_qualified" || rawStatus === "qualified"
       ? "search_qualified"
-      : "needs_review";
-    let targetSignals = stringArray(row.target_signals);
-    let koreaSignals = stringArray(row.korea_signals);
-    let flags = stringArray(row.flags).filter((flag) => !flag.startsWith("제외:") && flag !== "기존 결과·재검증 필요");
+      : rawStatus === "discovered" || rawStatus === "needs_review"
+        ? "needs_review"
+        : "hard_reject";
 
-    if (rawStatus === "discovered") {
-      const assessment = assessCandidate({ handle, evidenceKind, title: "", text: evidenceText, category });
-      if (assessment.candidateStatus === "hard_reject") return [];
-      candidateStatus = assessment.candidateStatus === "search_qualified" ? "search_qualified" : "needs_review";
-      targetSignals = assessment.targetSignals;
-      koreaSignals = assessment.koreaSignals;
-      flags = assessment.flags;
-    }
-
-    return [{
+    return {
       handle,
       profileUrl: String(row.profile_url),
       category,
@@ -157,10 +149,10 @@ export async function listCandidates(category: SearchCategory) {
       evidenceText,
       evidenceKind,
       candidateStatus,
-      targetSignals,
-      koreaSignals,
+      targetSignals: stringArray(row.target_signals),
+      koreaSignals: stringArray(row.korea_signals),
       rejectReasons: [],
-      flags,
+      flags: stringArray(row.flags).filter((flag) => !flag.startsWith("제외:") && flag !== "기존 결과·재검증 필요"),
       duplicateCheckStatus: normalizeDuplicateCheckStatus(row.duplicate_check_status),
       duplicateCheckMessage: nullableString(row.duplicate_check_message),
       duplicateCheckedAt: nullableString(row.duplicate_checked_at),
@@ -178,7 +170,12 @@ export async function listCandidates(category: SearchCategory) {
       verificationStatus: normalizeVerificationStatus(row.verification_status),
       verifiedAt: nullableString(row.verified_at),
       discoveredAt: String(row.first_seen_at ?? row.last_seen_at ?? new Date().toISOString()),
-    }];
+      storedDiscoveryStatus: rawStatus,
+      storedVerificationStatus: rawVerificationStatus,
+      storedDuplicateCheckStatus: rawDuplicateStatus,
+      isContacted: contacted.has(handle),
+      instagramVerificationPending: pendingInstagram.has(handle),
+    };
   });
 }
 
@@ -226,8 +223,8 @@ export async function getAutomationCandidates(
   return candidates.filter((candidate) => {
     if (!requested.has(candidate.handle)) return false;
     const state = getCandidateViewState(candidate);
-    if (mode === "duplicate") return state === "qualified";
-    return state === "priority";
+    if (mode === "duplicate") return state === "verification_needed" || state === "recommended";
+    return state === "duplicate_passed";
   });
 }
 
@@ -249,6 +246,29 @@ async function findContactedHandles(handles: string[]) {
     return new Set<string>();
   }
   return new Set((data ?? []).map((row) => String(row.normalized_handle)));
+}
+
+async function findPendingInstagramHandles(category: SearchCategory) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return new Set<string>();
+
+  const oldestActiveJob = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("creator_verification_jobs")
+    .select("handles")
+    .eq("category", category)
+    .eq("job_kind", "instagram")
+    .eq("status", "pending")
+    .gte("created_at", oldestActiveJob);
+
+  if (error) {
+    console.warn("supabase_pending_instagram_jobs_failed", error.message);
+    return new Set<string>();
+  }
+
+  return new Set(
+    (data ?? []).flatMap((row) => Array.isArray(row.handles) ? row.handles.map((handle) => String(handle).toLowerCase()) : []),
+  );
 }
 
 function mergeEvidenceText(first: string, second: string, maxLength = 2400) {
