@@ -29,6 +29,7 @@ Assert-NativeOk "local HEAD"
 if ([string]::IsNullOrWhiteSpace($SourceRef)) {
   $SourceRef = $RemoteHead
 }
+
 & git -C $Repo cat-file -e "${SourceRef}^{commit}"
 Assert-NativeOk "source commit"
 
@@ -45,6 +46,14 @@ if ($UiDirty.Count -gt 0) {
   throw "Target UI file has local changes"
 }
 
+$OverlayDirty = @(& git -C $Repo status --porcelain=v1 --untracked-files=all -- $HistoryComponentRel $HistoryRouteRel)
+Assert-NativeOk "overlay status"
+if ($OverlayDirty.Count -gt 0) {
+  Write-Host "Local changes already exist in history overlay files. Nothing was overwritten." -ForegroundColor Red
+  $OverlayDirty | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+  throw "History overlay files already exist locally"
+}
+
 $TempRoot = Join-Path $env:TEMP ("fixup-history-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 
@@ -52,27 +61,21 @@ $UiPath = Join-Path $Repo ($UiRel -replace "/", "\")
 $UiBackup = Join-Path $TempRoot "discovery-console.tsx"
 Copy-Item -LiteralPath $UiPath -Destination $UiBackup -Force
 
-$CreatedPaths = New-Object System.Collections.Generic.List[string]
-$Backups = @{}
+$CreatedPaths = @(
+  (Join-Path $Repo ($HistoryComponentRel -replace "/", "\")),
+  (Join-Path $Repo ($HistoryRouteRel -replace "/", "\"))
+)
 
 try {
-  foreach ($Rel in @($HistoryComponentRel, $HistoryRouteRel)) {
-    $Spec = "${SourceRef}:$Rel"
-    $Target = Join-Path $Repo ($Rel -replace "/", "\")
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
+  & git -C $Repo checkout $SourceRef -- $HistoryComponentRel $HistoryRouteRel
+  Assert-NativeOk "checkout history overlay"
 
-    if (Test-Path -LiteralPath $Target) {
-      $Backup = Join-Path $TempRoot ((Split-Path -Leaf $Target) + ".bak")
-      Copy-Item -LiteralPath $Target -Destination $Backup -Force
-      $Backups[$Target] = $Backup
-    } else {
-      $CreatedPaths.Add($Target) | Out-Null
-    }
+  & git -C $Repo reset -- $HistoryComponentRel $HistoryRouteRel
+  Assert-NativeOk "unstage history overlay"
 
-    & git -C $Repo show "--output=$Target" $Spec
-    Assert-NativeOk "git show $Rel"
-    if (-not (Test-Path -LiteralPath $Target)) {
-      throw "Failed to materialize $Rel"
+  foreach ($Path in $CreatedPaths) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+      throw "History overlay file was not materialized: $Path"
     }
   }
 
@@ -195,9 +198,6 @@ try {
 catch {
   Copy-Item -LiteralPath $UiBackup -Destination $UiPath -Force
 
-  foreach ($Target in $Backups.Keys) {
-    Copy-Item -LiteralPath $Backups[$Target] -Destination $Target -Force
-  }
   foreach ($Path in $CreatedPaths) {
     if (Test-Path -LiteralPath $Path) {
       Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
