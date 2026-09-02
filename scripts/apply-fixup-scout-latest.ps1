@@ -1,4 +1,4 @@
-﻿param(
+param(
   [string]$Repo = "C:\Users\동호\freelancing",
   [string]$Branch = "feat/fixup-scout-foundation"
 )
@@ -90,15 +90,24 @@ $movedUntracked = New-Object "System.Collections.Generic.List[string]"
 $preservedDifferences = New-Object "System.Collections.Generic.List[string]"
 
 # 현재 로컬에서는 untracked지만 최신 origin에서는 tracked가 된 파일은 stash 복원 시 충돌한다.
+# origin의 tracked 경로를 한 번만 읽어 HashSet으로 비교한다.
+# 존재하지 않는 경로 조회를 위해 git cat-file -e를 호출하지 않는다.
+$originTrackedPaths = @(& git -C $Repo -c core.quotePath=false ls-tree -r --name-only $originRef)
+Assert-LastExitCode "origin tracked 파일 목록 확인 실패"
+$originTracked = New-Object "System.Collections.Generic.HashSet[string]" ([System.StringComparer]::Ordinal)
+foreach ($trackedPathRaw in $originTrackedPaths) {
+  $trackedPath = $trackedPathRaw.Trim()
+  if ($trackedPath) { [void]$originTracked.Add($trackedPath) }
+}
+
 # 먼저 repo 밖 TEMP로 옮겨 원본을 보존하고, 최신 코드 반영 후 동일 여부를 비교한다.
-$untrackedPaths = @(& git -C $Repo ls-files --others --exclude-standard)
+$untrackedPaths = @(& git -C $Repo -c core.quotePath=false ls-files --others --exclude-standard)
 Assert-LastExitCode "untracked 파일 확인 실패"
 foreach ($gitPathRaw in $untrackedPaths) {
   $gitPath = $gitPathRaw.Trim()
   if (-not $gitPath) { continue }
 
-  & git -C $Repo cat-file -e "${originRef}:$gitPath" 2>$null
-  if ($LASTEXITCODE -eq 0) {
+  if ($originTracked.Contains($gitPath)) {
     $sourcePath = Join-Path $Repo ($gitPath -replace "/", "\")
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { continue }
 
