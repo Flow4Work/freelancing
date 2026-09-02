@@ -34,7 +34,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
 
   const handles = [...new Set(normalizedResults.map((result) => result.handle))];
   const [{ data: candidates, error: candidateError }, { data: contacted, error: contactedError }] = await Promise.all([
-    supabase.from("creator_candidates").select("normalized_handle").eq("category", category).in("normalized_handle", handles),
+    supabase.from("creator_candidates").select("normalized_handle, followers").eq("category", category).in("normalized_handle", handles),
     supabase.from("creator_contacted_handles").select("normalized_handle").in("normalized_handle", handles),
   ]);
 
@@ -42,12 +42,17 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   if (contactedError) throw new Error(`컨택 이력 확인 실패: ${contactedError.message}`);
 
   const allowed = new Set((candidates ?? []).map((row) => String(row.normalized_handle)));
+  const existingFollowers = new Map((candidates ?? []).map((row) => [
+    String(row.normalized_handle),
+    typeof row.followers === "number" && Number.isFinite(row.followers) ? row.followers : null,
+  ]));
   const blocked = new Set((contacted ?? []).map((row) => String(row.normalized_handle)));
   let updated = 0;
 
   for (const result of normalizedResults) {
     if (!allowed.has(result.handle) || blocked.has(result.handle)) continue;
 
+    const followers = result.followers ?? existingFollowers.get(result.handle) ?? null;
     const metrics = computeReelMetrics(result.reels);
     const decision = decideVerification({
       category,
@@ -55,7 +60,8 @@ export async function applyInstagramVerificationResults(category: SearchCategory
       exists: result.exists,
       isPrivate: result.isPrivate,
       isPersonalCreator: result.isPersonalCreator,
-      followers: result.followers,
+      bio: result.bio,
+      followers,
       recentActivity: result.recentActivity,
       japaneseTarget: result.japaneseTarget,
       koreaConnection: result.koreaConnection,
@@ -99,7 +105,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
         eligibility: decision.discoveryStatus === "qualified" ? "possible" : decision.discoveryStatus === "hard_reject" || decision.discoveryStatus === "private" ? "fail" : "unknown",
         activity: result.recentActivity === true ? "active" : "unknown",
         bio: result.bio,
-        followers: result.followers,
+        followers,
         reel_average: metrics.average,
         reel_median: metrics.median,
         reel_sample_size: metrics.sampleSize,
