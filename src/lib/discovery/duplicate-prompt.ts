@@ -2,7 +2,10 @@ import { FIXUP_DUPLICATE_CHECK_URL } from "@/lib/automation/config";
 import type { DiscoveryCandidate, SearchCategory } from "./types";
 
 export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], category: SearchCategory, jobId: string) {
-  const ids = candidates.map((candidate) => candidate.handle).join("\n");
+  const candidateRows = candidates.map((candidate) => JSON.stringify({
+    handle: candidate.handle,
+    followers: candidate.followers,
+  })).join("\n");
   const loginId = process.env.FIXUP_DUPLICATE_LOGIN_ID?.trim();
   const loginPassword = process.env.FIXUP_DUPLICATE_LOGIN_PASSWORD?.trim();
 
@@ -20,18 +23,18 @@ export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], cate
 - 비밀번호: ${loginPassword}
 - 위 값은 로그인 입력에만 사용한다. 출력/저장/결과 JSON 포함 금지.
 
-후보, 위에서 아래 순서 그대로:
-${ids}
+후보와 현재 followers(JSON Lines), 위에서 아래 순서 그대로:
+${candidateRows}
 
 가장 중요한 저장 규칙:
-- 후보 1명의 화면 판정이 끝나는 즉시 그 후보 1건만 http://localhost:3000/api/duplicate/results 로 POST한다.
+- 후보 1명의 화면 판정과 필요한 followers 확인이 끝나는 즉시 그 후보 1건만 http://localhost:3000/api/duplicate/results 로 POST한다.
 - 전체 후보를 다 검사한 뒤 한 번에 제출하지 않는다.
-- 한 명 판정 → 즉시 POST → ok:true 확인 → 다음 후보 순서다.
+- 한 명 판정 → 필요한 경우 followers 확인 → 즉시 POST → ok:true 확인 → 다음 후보 순서다.
 - Python/py/python3, Temp 파일, 파일 저장, --data-binary @파일경로를 사용하지 않는다.
 - 각 POST 응답의 processedCount/totalCount를 확인한다. POST가 실패하면 다음 후보로 넘어가지 않고 실패 종료한다.
 - 마지막 후보 POST 응답은 completed:true여야 전체 완료다.
 
-실행 규칙:
+중복 판정 실행 규칙:
 1. 중복 페이지를 연다.
 2. 로그인 화면이면 사용자 이름과 비밀번호를 직접 입력해 로그인한다.
 3. "Instagram ID" 입력칸과 "중복 확인 / 重複確認" 버튼을 한 번만 찾고, 이후 같은 폼을 계속 사용한다.
@@ -40,11 +43,18 @@ ${ids}
    - @ 없이 ID 입력
    - 중복 확인 클릭
    - 화면 결과 문구 확인
-   - 즉시 해당 후보 1건 POST 및 ok:true 확인
 5. 판정은 3개만 사용한다.
    - 등록 가능 / 登録可能 → available
    - 이미 등록 / 登録済み → duplicate
    - 보호 목록 / 保護リスト → protected
+
+followers 보강 규칙:
+- 후보 JSON의 followers가 숫자로 이미 있으면 그 값을 그대로 보존한다. Instagram을 추가로 열지 않는다.
+- followers가 null이고 중복 판정이 available인 경우에만 https://www.instagram.com/{handle}/ 프로필을 열어 현재 화면의 팔로워 수를 확인한다.
+- followers가 null이어도 duplicate/protected/unknown이면 Instagram을 절대 열지 않는다.
+- 현재 팔로워 수를 실제 화면에서 확인한 경우에만 정수 followers로 제출한다.
+- 숫자를 확인하지 못하면 추정하거나 0으로 만들지 말고 followers:null로 제출한다.
+- 팔로워 보강을 위해 Instagram을 열었더라도 BIO, Reels, 게시물, DM 등 다른 검증은 하지 않는다. 이 단계의 추가 조사는 팔로워 수 확인까지만이다.
 
 금지:
 - 후보 재검사
@@ -53,20 +63,22 @@ ${ids}
 - playwright_b_browser_run_code_unsafe 사용
 - Temp 파일 생성, cat, 파일 저장 후 --data-binary @파일경로 사용
 - "등록하기 / 登録する" 클릭
-- Instagram 열기
-- 결과 추정
+- available + followers:null 조건 외 Instagram 열기
+- 팔로워 외 Instagram 추가 조사
+- 결과/숫자 추정
 
 후보 1명당 제출 형식:
-{"jobId":"${jobId}","category":"${category}","results":[{"handle":"id","duplicateStatus":"available","duplicateMessage":"화면의 실제 결과 문구"}]}
+{"jobId":"${jobId}","category":"${category}","results":[{"handle":"id","duplicateStatus":"available","duplicateMessage":"화면의 실제 결과 문구","followers":12345}]}
+followers를 확인하지 못했거나 기존 값이 이미 있는 경우에는 followers:null 또는 필드 생략이 가능하다. 서버는 기존 followers를 보존한다.
 
 PowerShell 직접 POST 예시:
 $json = @'
-{"jobId":"${jobId}","category":"${category}","results":[{"handle":"현재ID","duplicateStatus":"available","duplicateMessage":"실제 문구"}]}
+{"jobId":"${jobId}","category":"${category}","results":[{"handle":"현재ID","duplicateStatus":"available","duplicateMessage":"실제 문구","followers":12345}]}
 '@
 $response = Invoke-RestMethod -Uri 'http://localhost:3000/api/duplicate/results' -Method POST -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 if ($response.ok -ne $true) { throw 'POST_FAILED' }
 $response | ConvertTo-Json -Depth 5
 
 응답 ok:true 확인 후에만 다음 후보로 간다. 마지막 응답 completed:true 확인 후 추가 작업 없이 종료한다.
-로그인 실패, 입력폼 없음, 후보 하나라도 판정 실패, POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 앞 후보 결과는 Scout에 그대로 보존된다.`;
+로그인 실패, 입력폼 없음, 후보 하나라도 중복 판정 실패, POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 앞 후보 결과는 Scout에 그대로 보존된다.`;
 }
