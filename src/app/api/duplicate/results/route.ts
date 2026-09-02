@@ -9,6 +9,7 @@ const resultSchema = z.object({
   handle: z.string().min(1).max(30),
   duplicateStatus: z.enum(["available", "duplicate", "protected", "unknown"]),
   duplicateMessage: z.string().max(500).nullable(),
+  followers: z.number().int().nonnegative().nullable().optional(),
 });
 
 const bodySchema = z.object({
