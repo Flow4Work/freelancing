@@ -41,11 +41,9 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
     rm(failedPath, { force: true }),
   ]);
 
-  const duplicatePriorityInstruction = input.title === "중복 확인"
-    ? `\n\n[최우선]\n- 후보는 순서대로 정확히 1회만 검사한다.\n- 중간 보고, 재검사, 테스트 계정, 추가 연구, run_code_unsafe, Temp 파일 생성을 하지 않는다.\n- 마지막 후보 직후 Invoke-RestMethod 직접 POST로 localhost:3000/api/duplicate/results 에 제출한다.\n- POST ok:true 확인 후 추가 작업 없이 종료한다.`
-    : "";
+  const reliabilityInstruction = `\n\n[최우선 저장 안정성]\n- 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.`;
 
-  await writeFile(promptPath, `${input.prompt}${duplicatePriorityInstruction}`, { encoding: "utf8" });
+  await writeFile(promptPath, `${input.prompt}${reliabilityInstruction}`, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -58,6 +56,22 @@ $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
+$JobId = ${psQuote(input.jobId)}
+$JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
+
+function Get-FixUpJobStatus {
+  return Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10
+}
+
+function Set-FixUpJobFailed([string]$Message) {
+  try {
+    $Body = @{ jobId = $JobId; error = $Message } | ConvertTo-Json -Compress
+    return Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10
+  } catch {
+    Write-Host "[FixUp Scout] 실패 상태 저장도 실패했습니다: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    return $null
+  }
+}
 
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
@@ -69,19 +83,38 @@ try {
   }
 
   Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 작업 지시를 opencode run에 전달합니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] 각 후보 결과는 완료 즉시 Scout에 저장됩니다." -ForegroundColor DarkGray
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 파일 저장 없이 localhost POST까지 완료해." --file $PromptFile
+  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 후보 1명마다 즉시 localhost POST하고 마지막 completed:true까지 확인해." --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
-  if ($Code -ne 0) {
-    throw "OpenCode가 종료 코드 $Code 로 끝났습니다."
+
+  $Job = $null
+  try { $Job = Get-FixUpJobStatus } catch {}
+
+  if ($null -eq $Job) {
+    $FailureMessage = if ($Code -ne 0) { "OpenCode 종료 코드 $Code, 작업 상태 조회 실패" } else { "OpenCode 종료 후 작업 완료 상태를 확인하지 못했습니다." }
+    $null = Set-FixUpJobFailed $FailureMessage
+    throw $FailureMessage
+  }
+
+  if ($Job.status -ne "completed") {
+    $Progress = "$($Job.processedCount)/$($Job.totalCount)"
+    $FailureMessage = if ($Code -ne 0) {
+      "OpenCode가 종료 코드 $Code 로 중단되었습니다. 저장 완료 $Progress"
+    } elseif ($Job.status -eq "failed" -and $Job.failureMessage) {
+      [string]$Job.failureMessage
+    } else {
+      "OpenCode가 전체 제출 완료 전에 종료되었습니다. 저장 완료 $Progress"
+    }
+    if ($Job.status -eq "pending") { $null = Set-FixUpJobFailed $FailureMessage }
+    throw $FailureMessage
   }
 
   Write-Host ""
-  Write-Host "[FixUp Scout] OpenCode 실행 종료. 제출 결과는 위 로그와 Scout 화면에서 확인하세요." -ForegroundColor Green
+  Write-Host "[FixUp Scout] 완료 · $($Job.processedCount)/$($Job.totalCount) 결과 저장 확인" -ForegroundColor Green
   Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Read-Host "창을 닫으려면 Enter"
@@ -89,9 +122,14 @@ try {
 }
 catch {
   $FailureMessage = $_.Exception.Message
+  try {
+    $Current = Get-FixUpJobStatus
+    if ($Current.status -eq "pending") { $null = Set-FixUpJobFailed $FailureMessage }
+  } catch {}
   try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
   Write-Host ""
   Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
+  Write-Host "이미 POST 성공한 후보 결과는 Scout에 보존됩니다." -ForegroundColor Yellow
   Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
   Read-Host "창을 닫으려면 Enter"
   exit 1
