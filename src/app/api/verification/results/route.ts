@@ -45,6 +45,9 @@ export async function POST(request: Request) {
     const handles = parsed.data.results.map((result) => result.handle);
     await assertVerificationJob(parsed.data.jobId, parsed.data.category, handles, "instagram");
     const saved = await applyInstagramVerificationResults(parsed.data.category, parsed.data.results);
+    if (saved.updated !== parsed.data.results.length) {
+      throw new Error(`검증 결과 ${parsed.data.results.length}건 중 ${saved.updated}건만 저장되어 진행률을 갱신하지 않았습니다.`);
+    }
     const progress = await recordVerificationJobProgress(parsed.data.jobId, parsed.data.category, handles);
     return NextResponse.json({
       ok: true,
