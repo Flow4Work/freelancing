@@ -10,6 +10,7 @@ export type KoreaAffinity = "strong" | "yes" | "none" | "unknown";
 export type ContentFit = "beauty" | "food" | "korea_travel" | "lifestyle" | "other";
 export type Eligibility = "possible" | "fail" | "unknown";
 export type CandidateActivity = "active" | "unknown";
+export type DmProvider = "groq" | "scaleway" | "fallback";
 
 export type RawSearchResult = {
   provider: SearchProviderName;
@@ -59,6 +60,13 @@ export type DiscoveryCandidate = {
   verificationNote: string | null;
   verificationStatus: VerificationStatus;
   verifiedAt: string | null;
+  dmPersonalizationSource: string | null;
+  dmPersonalizationBasis: string | null;
+  dmPersonalizationLine: string | null;
+  dmText: string | null;
+  dmProvider: DmProvider | null;
+  dmModel: string | null;
+  dmGeneratedAt: string | null;
   discoveredAt: string;
 };
 
