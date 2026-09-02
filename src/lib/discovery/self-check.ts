@@ -125,7 +125,7 @@ export function runQualitySelfCheck() {
     { url: "r6", postedAt: "2026-08-25", views: null },
   ]);
   check("Reel arithmetic mean computed by app", metrics.average === 3000 && metrics.sampleSize === 5 && metrics.totalConsidered === 6);
-  check("five Reel views is sufficient sample", metrics.status === "ready");
+  check("missing Reel view stays insufficient", metrics.status === "insufficient");
 
   const lowAccountMetrics = computeReelMetrics([
     { url: "a1", postedAt: null, views: 370 },
@@ -138,7 +138,7 @@ export function runQualitySelfCheck() {
     { url: "a8", postedAt: null, views: 610 },
     { url: "a9", postedAt: null, views: 252 },
   ]);
-  check("773 example arithmetic mean is 759 rounded", lowAccountMetrics.average === 759 && lowAccountMetrics.sampleSize === 9);
+  check("latest six Reel arithmetic mean is 868 rounded", lowAccountMetrics.average === 868 && lowAccountMetrics.sampleSize === 6 && lowAccountMetrics.totalConsidered === 6 && lowAccountMetrics.status === "ready");
 
   const lowAccountDecision = decideVerification({
     category: "beauty",
