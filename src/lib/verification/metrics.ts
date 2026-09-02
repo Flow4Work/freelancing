@@ -11,7 +11,7 @@ export type ReelMetrics = {
 };
 
 export function computeReelMetrics(input: ReelSnapshot[]): ReelMetrics {
-  const normalized = dedupeAndOrder(input).slice(0, 6);
+  const normalized = dedupeAndOrder(input).slice(0, 8);
   const views = normalized
     .map((item) => item.views)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
