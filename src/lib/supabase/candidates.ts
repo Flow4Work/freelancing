@@ -1,4 +1,5 @@
-import type { AccountAvailability, AccountType, CandidateActivity, ContentFit, DiscoveryCandidate, DuplicateCheckStatus, Eligibility, KoreaAffinity, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import type { AccountAvailability, AccountType, CandidateActivity, ContentFit, DiscoveryCandidate, DmProvider, DuplicateCheckStatus, Eligibility, KoreaAffinity, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import type { PreparedDm } from "@/lib/dm/prepare";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
@@ -118,7 +119,7 @@ export async function listCandidates(category: SearchCategory) {
 
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, account_availability, account_type, korea_affinity, content_fit, eligibility, activity, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, first_seen_at, last_seen_at")
+    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, account_availability, account_type, korea_affinity, content_fit, eligibility, activity, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, dm_personalization_source, dm_personalization_basis, dm_personalization_line, dm_text, dm_provider, dm_model, dm_generated_at, first_seen_at, last_seen_at")
     .eq("category", category)
     .order("first_seen_at", { ascending: false })
     .limit(1000);
@@ -184,6 +185,13 @@ export async function listCandidates(category: SearchCategory) {
       verificationNote: nullableString(row.verification_note),
       verificationStatus,
       verifiedAt: nullableString(row.verified_at),
+      dmPersonalizationSource: nullableString(row.dm_personalization_source),
+      dmPersonalizationBasis: nullableString(row.dm_personalization_basis),
+      dmPersonalizationLine: nullableString(row.dm_personalization_line),
+      dmText: nullableString(row.dm_text),
+      dmProvider: normalizeDmProvider(row.dm_provider),
+      dmModel: nullableString(row.dm_model),
+      dmGeneratedAt: nullableString(row.dm_generated_at),
       discoveredAt: String(row.first_seen_at ?? row.last_seen_at ?? new Date().toISOString()),
     };
   });
@@ -271,6 +279,45 @@ export async function getVerificationCandidates(category: SearchCategory, handle
   return getAutomationCandidates(category, handles, "instagram");
 }
 
+export async function getDmPreparationCandidates(category: SearchCategory, handles: string[]) {
+  const requested = new Set(handles.map((handle) => handle.toLowerCase()));
+  const candidates = await listCandidates(category);
+  return candidates.filter((candidate) => (
+    requested.has(candidate.handle)
+    && candidate.duplicateCheckStatus === "available"
+    && candidate.verificationStatus === "verified"
+    && candidate.candidateStatus === "qualified"
+  ));
+}
+
+export async function savePreparedDm(category: SearchCategory, prepared: PreparedDm[]) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
+  if (!prepared.length) return;
+
+  for (const item of prepared) {
+    const { error } = await supabase
+      .from("creator_candidates")
+      .update({
+        dm_personalization_source: sanitizeDbText(item.personalizationSource),
+        dm_personalization_basis: sanitizeDbText(item.personalizationBasis),
+        dm_personalization_line: sanitizeDbText(item.personalizationLine),
+        dm_text: item.dmText,
+        dm_provider: item.provider,
+        dm_model: sanitizeDbText(item.model),
+        dm_generated_at: item.generatedAt,
+        updated_at: item.generatedAt,
+      })
+      .eq("normalized_handle", item.handle)
+      .eq("category", category)
+      .eq("duplicate_check_status", "available")
+      .eq("verification_status", "verified")
+      .eq("discovery_status", "qualified");
+
+    if (error) throw new Error(`@${item.handle} DM 저장 실패: ${error.message}`);
+  }
+}
+
 async function findContactedHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
@@ -329,6 +376,10 @@ function numberOrNull(value: unknown) {
 
 function normalizeProvider(value: unknown): SearchProviderName {
   return value === "tavily" ? "tavily" : "exa";
+}
+
+function normalizeDmProvider(value: unknown): DmProvider | null {
+  return value === "groq" || value === "scaleway" || value === "fallback" ? value : null;
 }
 
 function normalizeVerificationStatus(value: unknown): VerificationStatus {
