@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Repo,
-  [string]$Branch = "feat/fixup-scout-foundation"
+  [string]$Branch = "feat/fixup-scout-foundation",
+  [string]$SourceRef = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,12 @@ $RemoteHead = (& git -C $Repo rev-parse $RemoteRef).Trim()
 Assert-NativeOk "remote HEAD"
 $LocalHead = (& git -C $Repo rev-parse HEAD).Trim()
 Assert-NativeOk "local HEAD"
+
+if ([string]::IsNullOrWhiteSpace($SourceRef)) {
+  $SourceRef = $RemoteHead
+}
+& git -C $Repo cat-file -e "${SourceRef}^{commit}"
+Assert-NativeOk "source commit"
 
 $UiRel = "src/components/discovery-console.tsx"
 $HistoryComponentRel = "src/components/automation-history.tsx"
@@ -50,7 +57,7 @@ $Backups = @{}
 
 try {
   foreach ($Rel in @($HistoryComponentRel, $HistoryRouteRel)) {
-    $Spec = "${RemoteRef}:$Rel"
+    $Spec = "${SourceRef}:$Rel"
     $Target = Join-Path $Repo ($Rel -replace "/", "\")
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
 
@@ -180,6 +187,7 @@ try {
   Write-Host "[FixUp Scout] History control and API are active." -ForegroundColor Green
   Write-Host "local HEAD:  $LocalHead" -ForegroundColor DarkGray
   Write-Host "remote HEAD: $RemoteHead" -ForegroundColor DarkGray
+  Write-Host "source ref:  $SourceRef" -ForegroundColor DarkGray
   Write-Host "Local candidates.ts was not modified." -ForegroundColor Green
   Write-Host "History items: $(@($History.items).Count)" -ForegroundColor Green
   Start-Process "http://localhost:3000"
