@@ -72,7 +72,7 @@ try {
             <button className="primary" style={{ marginLeft: 0 }} onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
           </div>
 '@
-    $Ui = $Ui.Replace($Button, $Replacement.TrimEnd("`r", "`n"))
+    $Ui = $Ui.Replace($Button, $Replacement.TrimEnd([char[]]"`r`n"))
   }
 
   [IO.File]::WriteAllText($UiPath, $Ui, $Utf8)
@@ -119,7 +119,7 @@ try {
   $History = Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/automation/history?category=beauty" -Method Get -TimeoutSec 15
   if (-not $History.ok) { throw "기록 API 검증 실패" }
 
-  Write-Host "" 
+  Write-Host ""
   Write-Host "[FixUp Scout] 기록 버튼/기록 API 반영 완료" -ForegroundColor Green
   Write-Host "local HEAD:  $LocalHead" -ForegroundColor DarkGray
   Write-Host "remote HEAD: $RemoteHead" -ForegroundColor DarkGray
