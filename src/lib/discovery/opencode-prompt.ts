@@ -12,10 +12,19 @@ export function buildOpenCodeVerificationPrompt(candidates: DiscoveryCandidate[]
 
 목적: 아래 FixUp ${categoryLabel} 후보의 Instagram 원본을 직접 최종 검증하고 결과를 FixUp Scout에 자동 반영한다.
 
+가장 중요한 저장 규칙:
+- 후보 1명 검증이 끝날 때마다 그 후보 결과 1건을 즉시 http://localhost:3000/api/verification/results 로 POST한다.
+- 30명을 전부 조사한 뒤 한 번에 제출하지 않는다. 한 명 확인 → 즉시 POST → ok:true 확인 → 다음 후보 순서다.
+- Python/py/python3, pathlib, Temp 파일, 결과 파일 생성, --data-binary @파일경로를 절대 사용하지 않는다.
+- POST는 PowerShell Invoke-RestMethod로 메모리의 JSON 문자열을 직접 보낸다.
+- 각 POST 응답의 ok:true와 processedCount/totalCount를 확인한다. POST가 실패하면 다음 후보로 넘어가지 말고 오류를 남기고 종료한다.
+- 마지막 후보 POST 응답은 completed:true여야 전체 완료다. completed:true를 확인하지 못하면 완료라고 말하지 않는다.
+- 이미 POST 성공한 후보는 Scout에 저장된 것이므로 다시 조사하거나 다시 제출하지 않는다.
+
 중요:
 - 이 단계에서는 FixUp 중복 페이지 / script.google.com / Apps Script를 절대 열지 않는다.
 - 중복 확인은 이전 단계에서 끝났다. 아래 duplicateStatus / duplicateMessage는 절대 변경하지 않고 그대로 보존한다.
-- duplicateStatus가 available인 후보만 Instagram 원본을 검증한다. 그 외 후보는 Instagram을 열지 않고 검증 필드를 null, reels는 []로 둔다.
+- duplicateStatus가 available인 후보만 Instagram 원본을 검증한다. 그 외 후보는 Instagram을 열지 않고 검증 필드를 null, reels는 []로 둔 뒤 즉시 1건 POST한다.
 - 새 로그인, DM/팔로우/좋아요/댓글, 후보 외 탐색, 숫자 추정, Reels 평균 직접 계산을 금지한다.
 - 프로필 header/meta만 읽고 검증을 끝내면 안 된다. 최근 활동과 Reels는 실제 게시물/Reel 화면까지 열어 확인한다.
 
@@ -29,20 +38,27 @@ Instagram 검증:
 7. 일본 타깃 / 한국 접점 / ${categoryLabel} 관련성은 BIO 문구만으로 억지 확정하지 않는다. 현재 프로필과 최근 공개 콘텐츠를 함께 보고 판정한다.
 8. 제3자 검색 결과나 과거 캐시만으로 현재 계정 존재/수치/활동을 확정하지 않는다.
 
-제출 전 필수 QA:
-- 모든 후보를 정확히 한 번씩 포함한다.
+각 후보 POST 전 QA:
 - handle은 @ 없이 정확히 일치한다.
 - duplicateStatus / duplicateMessage는 아래 기존 값과 완전히 동일해야 한다.
 - 숫자를 확인하지 못했으면 null이다.
-- recentActivity=true인 후보는 lastActivityAt에 실제 확인한 날짜가 있어야 한다.
+- recentActivity=true이면 lastActivityAt에 실제 확인한 날짜가 있어야 한다.
 - ${category === "beauty" ? "정성 조건상 계속 검증할 가치가 있는 공개 개인 크리에이터인데 reels가 0개라면, POST 전에 해당 계정의 Reels 탭과 개별 Reel 접근을 한 번 더 시도한다. 그래도 확인 불가일 때만 reels:[]로 제출하고 note에 'Reels 원본 확인 불가'를 명시한다." : "최근 활동 판정은 실제 게시일 근거가 있어야 한다."}
 - Reels 평균은 계산하지 않는다. Scout 서버가 수집한 원본 조회수로 계산한다.
 
 후보와 기존 중복 결과(JSON Lines):
 ${candidateRows}
 
-아래 형식의 JSON 하나만 만든다. duplicateStatus / duplicateMessage는 위 기존 값을 그대로 복사한다.
+후보 1명당 아래 body 형식으로 즉시 제출한다.
 {"jobId":"${jobId}","category":"${category}","results":[{"handle":"id","duplicateStatus":"available","duplicateMessage":null,"exists":true,"isPrivate":false,"isPersonalCreator":true,"bio":"BIO 또는 null","followers":12345,"recentActivity":true,"lastActivityAt":"2026-08-31 또는 null","japaneseTarget":true,"koreaConnection":true,"categoryRelevant":true,"reels":[{"url":"https://www.instagram.com/reel/.../","postedAt":"2026-08-30","views":12345}],"note":"한국어 핵심 사유 1줄"}]}
 
-완료 후 JSON을 UTF-8 임시파일로 저장하고 curl.exe -H "Content-Type: application/json" --data-binary "@파일경로" http://localhost:3000/api/verification/results 로 POST한다. 응답의 \"ok\":true를 실제 확인해야 완료다. POST가 실패하면 완료라고 말하지 말고 오류를 그대로 남긴다.`;
+PowerShell 제출 방식은 다음처럼 파일 없이 직접 수행한다.
+$json = @'
+{"jobId":"${jobId}","category":"${category}","results":[...현재 후보 1건만...]}
+'@
+$response = Invoke-RestMethod -Uri 'http://localhost:3000/api/verification/results' -Method POST -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
+if ($response.ok -ne $true) { throw 'POST_FAILED' }
+$response | ConvertTo-Json -Depth 5
+
+마지막 후보에서 response.completed이 true인지 반드시 확인한 뒤 종료한다.`;
 }
