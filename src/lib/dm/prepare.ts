@@ -7,6 +7,8 @@ const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const SCALEWAY_URL = "https://api.scaleway.ai/v1/chat/completions";
 const SAFE_FALLBACK_LINE = "プロフィールを拝見し、ご連絡しました。";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_RETRY_DELAY_MS = 65_000;
 
 type PersonalizationBasis = {
   source: string;
@@ -153,77 +155,114 @@ async function generatePersonalizationLine(basis: PersonalizationBasis): Promise
 }
 
 async function requestLine(url: string, apiKey: string, model: string, prompt: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        max_tokens: 120,
-        messages: [
-          { role: "system", content: "You write one factual Japanese personalization sentence using only supplied evidence." },
-          { role: "user", content: prompt },
-        ],
-      }),
-      signal: controller.signal,
-      cache: "no-store",
-    });
+  const response = await fetchWith429Retry(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.1,
+      max_tokens: 120,
+      messages: [
+        { role: "system", content: "You write one factual Japanese personalization sentence using only supplied evidence." },
+        { role: "user", content: prompt },
+      ],
+    }),
+    cache: "no-store",
+  });
 
-    if (!response.ok) {
-      const detail = compact(await response.text(), 240);
-      throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
-    }
-
-    const payload = await response.json() as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-    };
-    return normalizeModelLine(payload.choices?.[0]?.message?.content);
-  } finally {
-    clearTimeout(timeout);
+  if (!response.ok) {
+    const detail = compact(await response.text(), 240);
+    throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
   }
+
+  const payload = await response.json() as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  return normalizeModelLine(payload.choices?.[0]?.message?.content);
 }
 
 async function requestTranslation(url: string, apiKey: string, model: string, prompt: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        max_tokens: 700,
-        messages: [
-          { role: "system", content: "Translate the supplied Japanese DM into faithful, natural Korean. Return only the Korean translation." },
-          { role: "user", content: prompt },
-        ],
-      }),
-      signal: controller.signal,
-      cache: "no-store",
-    });
+  const response = await fetchWith429Retry(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.1,
+      max_tokens: 700,
+      messages: [
+        { role: "system", content: "Translate the supplied Japanese DM into faithful, natural Korean. Return only the Korean translation." },
+        { role: "user", content: prompt },
+      ],
+    }),
+    cache: "no-store",
+  });
 
-    if (!response.ok) {
-      const detail = compact(await response.text(), 240);
-      throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
+  if (!response.ok) {
+    const detail = compact(await response.text(), 240);
+    throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
+  }
+
+  const payload = await response.json() as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  return normalizeKoreanTranslation(payload.choices?.[0]?.message?.content);
+}
+
+async function fetchWith429Retry(url: string, init: RequestInit) {
+  for (let retry = 0; retry <= MAX_RATE_LIMIT_RETRIES; retry += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
+    let response: Response;
+
+    try {
+      response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
     }
 
-    const payload = await response.json() as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-    };
-    return normalizeKoreanTranslation(payload.choices?.[0]?.message?.content);
-  } finally {
-    clearTimeout(timeout);
+    if (response.status !== 429 || retry === MAX_RATE_LIMIT_RETRIES) {
+      return response;
+    }
+
+    const delayMs = getRetryDelayMs(response.headers.get("retry-after"), retry);
+    await response.text().catch(() => "");
+    console.warn("dm_llm_429_retry", `retry=${retry + 1} wait_ms=${delayMs}`);
+    await sleep(delayMs);
   }
+
+  throw new Error("rate_limit_retry_exhausted");
+}
+
+function getRetryDelayMs(retryAfter: string | null, retry: number) {
+  let retryAfterMs: number | null = null;
+
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      retryAfterMs = Math.ceil(seconds * 1000);
+    } else {
+      const retryAt = Date.parse(retryAfter);
+      if (Number.isFinite(retryAt)) {
+        retryAfterMs = Math.max(0, retryAt - Date.now());
+      }
+    }
+  }
+
+  const fallbackMs = Math.min(10_000, 2_000 * (2 ** retry));
+  return Math.min(MAX_RETRY_DELAY_MS, Math.max(500, retryAfterMs ?? fallbackMs));
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeModelLine(value: string | null | undefined) {
