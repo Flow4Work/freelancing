@@ -23,7 +23,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "최종 검증 완료 후보가 없습니다." }, { status: 409 });
     }
 
-    const prepared = await mapWithConcurrency(candidates, 3, prepareCandidateDm);
+    const prepared = await mapWithConcurrency(candidates, 1, prepareCandidateDm);
     await savePreparedDm(parsed.data.category, prepared);
 
     const providerCounts = prepared.reduce<Record<string, number>>((counts, item) => {
