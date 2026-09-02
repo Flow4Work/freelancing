@@ -79,7 +79,7 @@ export type PreparedDm = {
 export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise<PreparedDm> {
   const basis = selectPersonalizationBasis(candidate);
   const generated = await generatePersonalizationLine(candidate.handle, basis);
-  const dmText = composeDm(candidate.category, generated.line, candidate.handle);
+  const dmText = composeDm(candidate.category, generated.line, candidate.handle, hasExplicitKoreaPresence(candidate));
   const koreanText = await translateDmToKorean(dmText);
 
   return {
@@ -178,13 +178,19 @@ async function generatePersonalizationLine(
     "다음 확인된 공개 프로필/콘텐츠 근거만 사용해 Instagram 첫 DM의 개인화 부분을 자연스러운 일본어 1문장으로 작성한다.",
     "우선순위는 반드시 사실 정확성 > 자연스러움 > 문형 다양성 순서다. 다양성을 위해 원본 의미를 바꾸지 않는다.",
     "개인화와 뒤에 이어질 PR 제안 장르는 완전히 분리한다. 미용 PR을 제안한다고 해서 개인화 문장을 미용 내용으로 맞추거나 바꾸지 않는다.",
-    "BIO에서 ｜ / ・ / 쉼표 등으로 나열된 사실 A와 사실 B는 원문 문법상 직접 연결되어 있지 않으면 서로 독립된 사실로 취급한다. 둘을 합쳐 새로운 관계를 만들지 않는다.",
+    "BIO에서 ｜ / ・ / 쉼표 / 슬래시 / 공백 등으로 병렬 나열된 사실 A/B/C는 원문 문법상 직접 연결되어 있지 않으면 반드시 서로 독립된 사실로 취급한다.",
+    "개인화에는 기본적으로 확인된 사실 1개만 사용한다. 여러 사실을 자연스럽게 이어 붙이는 것보다 나머지 사실을 버리는 쪽을 우선한다.",
+    "2개 사실을 함께 써도 되는 경우는 원문 자체가 두 사실의 관계를 문법적으로 명시한 경우뿐이다. 단순 나열을 이유·관점·역할·수단·원인 관계로 바꾸지 않는다.",
+    "원문에 그 관계가 직접 없으면 『〜として〜を発信』『〜の視点から』『〜を活かして』『〜だから』『〜を通じて』『〜を中心に』처럼 두 사실을 연결하는 표현을 만들지 않는다.",
     "예: 『薬局』『肌管理』가 따로 나열됐다고 『薬局での肌管理』로 만들지 않는다. 『資格所持』『発信』이 따로 있다고 『資格を活かした発信』으로 만들지 않는다.",
+    "예: 『韓国好き15年』『韓国コスメ研究家』가 따로 있으면 『15年の視点から発信』처럼 합치지 말고 둘 중 하나만 사용한다.",
+    "예: 『コスメ』『植物』『編み物』가 나열되어 있으면 이를 하나의 라이프스타일 철학이나 선택 기준으로 묶지 말고 가장 적합한 사실 하나만 사용한다.",
+    "예: 『コンシェルジュ』『コーデ』『肌管理』가 따로 있으면 『コンシェルジュとしてコーデや肌管理を発信』처럼 역할과 활동을 새로 연결하지 않는다.",
     "기간 표현은 원본에서 실제로 수식하는 대상을 그대로 보존한다. 예: 『韓国好き15年』은 한국을 좋아한 기간이지, 15년간 발신했다는 뜻이 아니다.",
     "원본 근거의 의미나 분야를 다른 분야로 변환하지 않는다. 예: コーデ를肌管理로 바꾸거나, 일반적인韓国発信을美容発信으로 바꾸지 않는다.",
     "근거에 없는 관심, 호감, 공감, 전문성, 평가, 인과관계를 추가하지 않는다. 『関心が近いと感じて』『惹かれ』『魅力を感じて』『資格を活かして』 같은 표현을 만들지 않는다.",
     "Reels/리일/재생수/조회수/팔로워/평균/표본 수/순위/검증 상태/조건 충족/중복 확인/후보 상태/내부 판정은 입력에 있더라도 절대 언급하지 않는다.",
-    "사실이 여러 개여도 가장 자연스럽고 구체적인 사실 1개를 우선 사용한다. 정말 원문에서 직접 연결된 경우에만 2개까지 사용한다.",
+    "사실이 여러 개면 가장 자연스럽고 구체적인 사실 1개만 고른다. 화려한 개인화보다 원본 사실을 덜 쓰는 것이 항상 낫다.",
     "월별 한국 방문, 장기간의 한국 관련 활동, 실제 직업/역할/근무, 구체적인 BIO 사실은 generic한 단어 하나보다 우선한다.",
     "BIO 문구를 그대로 이어 붙이지 말고 사실의 의미와 수식 관계는 그대로 보존한 채 일본인이 실제 첫 DM에서 쓸 자연스러운 표현으로 다시 쓴다.",
     "『経歴』『経歴を拝見し』『姿を拝見し』『〜点に注目して』『日韓夫婦美容室』처럼 분석 보고서/채용 문구 또는 한국어식 명사 결합은 쓰지 않는다.",
@@ -436,8 +442,9 @@ function buildCorrectionPrompt(originalPrompt: string, error: DmLineValidationEr
     `검증 사유: ${error.code}`,
     blocked,
     "위 표현 또는 문제를 사용하지 말고, 같은 확인 근거 범위 안에서 자연스러운 일본어 한 문장으로 다시 작성한다.",
-    "서로 독립된 BIO 항목을 새 관계로 결합하지 않는다. 원본에 없는 인과관계나 활동을 만들지 않는다.",
-    "기간 표현이 무엇을 수식하는지 원본 그대로 유지한다. 예: 韓国好き15年을 15年間の発信으로 바꾸지 않는다.",
+    "서로 독립된 BIO 항목을 새 관계로 결합하지 않는다. 기본은 확인된 사실 1개만 사용하는 것이다.",
+    "단순 나열된 사실을 『〜として〜を発信』『〜の視点から』『〜を活かして』『〜だから』『〜を通じて』 같은 새 역할·관점·인과관계로 연결하지 않는다.",
+    "기간 표현이 무엇을 수식하는지 원본 그대로 유지한다. 예: 韓国好き15年을 15年間の発信이나 15年の視点からの発信으로 바꾸지 않는다.",
     "원본 근거의 분야를 바꾸거나 새로운 관심/호감/전문성을 만들지 않는다.",
     "최종 출력 전에 조사와 일본어 문법을 다시 확인한다.",
     "새 사실을 추가하지 말고, 내부 조회수/팔로워/Reels/검증/후보 정보는 절대 넣지 않는다.",
@@ -493,7 +500,7 @@ function normalizeKoreanTranslation(value: string | null | undefined) {
   return text;
 }
 
-function composeDm(category: SearchCategory, personalizationLine: string, handle: string) {
+function composeDm(category: SearchCategory, personalizationLine: string, handle: string, hasKoreaPresence: boolean) {
   if (category !== "beauty") {
     return [
       "突然のDM失礼いたします。",
@@ -503,8 +510,8 @@ function composeDm(category: SearchCategory, personalizationLine: string, handle
   }
 
   const opener = beautyOpeningCopy(handle);
-  const offer = beautyOfferCopy(handle);
-  const question = beautyQuestionCopy(handle);
+  const offer = beautyOfferCopy(handle, hasKoreaPresence);
+  const question = beautyQuestionCopy(handle, hasKoreaPresence);
   return [opener, personalizationLine, `${offer}${question}`].join("\n");
 }
 
@@ -517,7 +524,15 @@ function beautyOpeningCopy(handle: string) {
   return variants[stableBucket(`opening:${handle}`, variants.length)];
 }
 
-function beautyOfferCopy(handle: string) {
+function beautyOfferCopy(handle: string, hasKoreaPresence: boolean) {
+  if (hasKoreaPresence) {
+    const localVariants = [
+      "韓国のFixUpでは、韓国でご参加いただける有償の美容PR案件をご案内しています。",
+      "韓国のFixUpでは、韓国での美容PRのお仕事で、報酬ありの案件をご案内しています。",
+    ];
+    return localVariants[stableBucket(`offer-local:${handle}`, localVariants.length)];
+  }
+
   const variants = [
     "韓国のFixUpでは、韓国でご参加いただける有償の美容PR案件をご案内しています。",
     "韓国のFixUpでは、韓国での美容PRのお仕事で、報酬ありの案件をご案内しています。",
@@ -526,13 +541,35 @@ function beautyOfferCopy(handle: string) {
   return variants[stableBucket(`offer:${handle}`, variants.length)];
 }
 
-function beautyQuestionCopy(handle: string) {
+function beautyQuestionCopy(handle: string, hasKoreaPresence: boolean) {
+  if (hasKoreaPresence) {
+    const localVariants = [
+      "ご興味がありましたら、詳しい内容をご案内します。",
+      "もしご興味があれば、詳細をお送りします。",
+    ];
+    return localVariants[stableBucket(`question-local:${handle}`, localVariants.length)];
+  }
+
   const variants = [
     "今後、韓国に来られるご予定はありますか？ご興味があれば詳細をお送りします。",
     "韓国へお越しになるご予定はありますか？ご興味がありましたら、詳しい内容をお送りします。",
     "近いうちに韓国へ来られるご予定はありますか？もしご興味があれば、詳細をご案内します。",
   ];
   return variants[stableBucket(`question:${handle}`, variants.length)];
+}
+
+function hasExplicitKoreaPresence(candidate: DiscoveryCandidate) {
+  const evidence = compact([candidate.bio, candidate.evidenceText].filter(Boolean).join(" · "), 2400);
+  if (!evidence) return false;
+
+  const explicitPatterns = [
+    /在韓\s*\d*\s*年目?/i,
+    /韓国[^。·]{0,24}(?:在住|居住|生活中|勤務|勤め|働いて|運営|経営)/i,
+    /ソウルで[^。·]{0,40}(?:在住|生活|暮ら|勤務|勤め|働|運営|経営|美容室|美容師)/i,
+    /서울에서[^。·]{0,40}(?:거주|생활|근무|운영|경영)/i,
+    /한국에서[^。·]{0,40}(?:거주|생활|근무|운영|경영)/i,
+  ];
+  return explicitPatterns.some((pattern) => pattern.test(evidence));
 }
 
 function personalizationStyleHint(handle: string) {
