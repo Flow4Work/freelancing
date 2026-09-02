@@ -111,6 +111,7 @@ const RECOMMENDED_BADGE_STYLE = { color: "#d6336c", background: "#fff0f6" };
 const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" };
 const ACTION_SLOT_WIDTH = 118;
 const AUTOMATION_WATCH_MS = 3 * 60 * 60 * 1000;
+const BULK_APPROVAL_HANDLE = "__all__";
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -440,24 +441,29 @@ export function DiscoveryConsole() {
     )));
   }
 
+  async function requestDmTranslation(japaneseText: string) {
+    const response = await fetch("/api/dm/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ japaneseText }),
+    });
+    const payload = await response.json() as DmContactsResponse;
+    if (!response.ok || !payload.ok || !payload.koreanText) throw new Error(payload.error ?? "한국어 번역 갱신 실패");
+    return payload.koreanText;
+  }
+
   async function translateDmDraft(handle: string) {
     const draft = dmDrafts.find((item) => item.handle === handle);
-    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle) return;
+    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle || dmApprovingHandle) return;
     const japaneseText = draft.japaneseText.trim();
     if (!japaneseText) return;
 
     setDmTranslatingHandle(handle);
     try {
-      const response = await fetch("/api/dm/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ japaneseText }),
-      });
-      const payload = await response.json() as DmContactsResponse;
-      if (!response.ok || !payload.ok || !payload.koreanText) throw new Error(payload.error ?? "한국어 번역 갱신 실패");
+      const koreanText = await requestDmTranslation(japaneseText);
       setDmDrafts((current) => current.map((item) => (
         item.handle === handle && item.japaneseText.trim() === japaneseText
-          ? { ...item, koreanText: payload.koreanText!, translationDirty: false }
+          ? { ...item, koreanText, translationDirty: false }
           : item
       )));
     } catch (caught) {
@@ -467,51 +473,77 @@ export function DiscoveryConsole() {
     }
   }
 
-  async function copyDmText(japaneseText: string) {
+  async function copyAllDmText() {
+    const text = dmDrafts
+      .map((draft) => `@${draft.handle}\n${draft.japaneseText}`)
+      .join("\n\n");
     try {
-      await navigator.clipboard.writeText(japaneseText);
-      setToast({ kind: "success", message: "복사 완료" });
+      await navigator.clipboard.writeText(text);
+      setToast({ kind: "success", message: "전체 복사 완료" });
     } catch {
       setToast({ kind: "error", message: "클립보드 복사에 실패했습니다." });
     }
   }
 
-  async function approveDmDraft(handle: string) {
-    const draft = dmDrafts.find((item) => item.handle === handle);
-    if (!draft || draft.approved || dmApprovingHandle) return;
-    const japaneseText = draft.japaneseText;
-    if (!japaneseText.trim()) {
-      setToast({ kind: "error", message: "일본어 DM 원문이 비어 있습니다." });
+  async function approveAllDmDrafts() {
+    if (!dmDrafts.length || dmApprovingHandle) return;
+    const pending = dmDrafts.filter((draft) => !draft.approved);
+    if (!pending.length) return;
+    const empty = pending.find((draft) => !draft.japaneseText.trim());
+    if (empty) {
+      setToast({ kind: "error", message: `@${empty.handle} 일본어 DM 원문이 비어 있습니다.` });
       return;
     }
 
-    setDmApprovingHandle(handle);
+    setDmApprovingHandle(BULK_APPROVAL_HANDLE);
     setToast(null);
-    try {
-      const response = await fetch("/api/dm/approve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, handle, japaneseText }),
-      });
-      const payload = await response.json() as DmContactsResponse;
-      if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? "DM 통과 처리 실패");
+    let working = dmDrafts.map((draft) => ({ ...draft }));
+    let approvedCount = 0;
 
-      setDmDrafts((current) => current.map((item) => (
-        item.handle === handle
-          ? {
-              ...item,
-              japaneseText: payload.contact!.japaneseText,
-              koreanText: payload.contact!.koreanText,
-              translationDirty: false,
-              approved: true,
-            }
-          : item
-      )));
+    try {
+      for (let index = 0; index < working.length; index += 1) {
+        const draft = working[index];
+        if (draft.approved || !draft.translationDirty) continue;
+        setDmTranslatingHandle(draft.handle);
+        const koreanText = await requestDmTranslation(draft.japaneseText);
+        working[index] = { ...draft, koreanText, translationDirty: false };
+        setDmDrafts(working.map((item) => ({ ...item })));
+      }
+      setDmTranslatingHandle(null);
+
+      for (let index = 0; index < working.length; index += 1) {
+        const draft = working[index];
+        if (draft.approved) continue;
+
+        const response = await fetch("/api/dm/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category, handle: draft.handle, japaneseText: draft.japaneseText }),
+        });
+        const payload = await response.json() as DmContactsResponse;
+        if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? `@${draft.handle} DM 통과 처리 실패`);
+
+        working[index] = {
+          ...draft,
+          japaneseText: payload.contact.japaneseText,
+          koreanText: payload.contact.koreanText,
+          translationDirty: false,
+          approved: true,
+        };
+        approvedCount += 1;
+        setDmDrafts(working.map((item) => ({ ...item })));
+      }
+
       await reloadDmContacts(category);
       setToast({ kind: "success", message: "OpenCode가 작업을 시작합니다." });
     } catch (caught) {
-      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 통과 처리 실패" });
+      const message = caught instanceof Error ? caught.message : "DM 전체 통과 처리 실패";
+      setToast({
+        kind: "error",
+        message: approvedCount > 0 ? `전체 통과 ${approvedCount}/${pending.length}명 처리 후 중단 · ${message}` : message,
+      });
     } finally {
+      setDmTranslatingHandle(null);
       setDmApprovingHandle(null);
     }
   }
@@ -650,7 +682,7 @@ export function DiscoveryConsole() {
 
       {dmModalOpen && dmDrafts.length > 0 && (
         <div className={dmStyles.backdrop} role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setDmModalOpen(false);
+          if (event.target === event.currentTarget && !dmApprovingHandle) setDmModalOpen(false);
         }}>
           <section className={dmStyles.modal} role="dialog" aria-modal="true" aria-label={`DM 준비 · ${dmDrafts.length}명`}>
             <div className={dmStyles.modalHead}>
@@ -658,66 +690,60 @@ export function DiscoveryConsole() {
                 <strong>DM 준비</strong>
                 <span>· {dmDrafts.length}명</span>
               </div>
-              <button className={dmStyles.closeButton} type="button" aria-label="닫기" onClick={() => setDmModalOpen(false)}>×</button>
+              <button className={dmStyles.closeButton} type="button" aria-label="닫기" onClick={() => setDmModalOpen(false)} disabled={Boolean(dmApprovingHandle)}>×</button>
             </div>
 
-            <div className={dmStyles.modalBody}>
-              <div className={dmStyles.candidateList}>
-                {dmDrafts.map((draft) => (
-                  <section className={dmStyles.candidateRow} key={draft.handle}>
-                    <div className={dmStyles.candidateHead}>
-                      <strong className={dmStyles.candidateHandle}>@{draft.handle}</strong>
-                    </div>
-
-                    <div className={dmStyles.columns}>
-                      <div className={dmStyles.panel}>
-                        <div className={dmStyles.panelHead}>
-                          <strong>일본어 원문</strong>
-                          <div className={dmStyles.panelActions}>
-                            <button className="secondary" type="button" onClick={() => copyDmText(draft.japaneseText)}>복사</button>
-                            <button
-                              className="secondary"
-                              type="button"
-                              onClick={() => runDmPrepare([draft.handle])}
-                              disabled={draft.approved || dmRegeneratingHandle === draft.handle}
-                            >
-                              {dmRegeneratingHandle === draft.handle ? "생성 중…" : "다시 생성"}
-                            </button>
-                          </div>
-                        </div>
-                        <textarea
-                          className={dmStyles.textarea}
-                          value={draft.japaneseText}
-                          disabled={draft.approved}
-                          onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
-                          onBlur={() => translateDmDraft(draft.handle)}
-                        />
-                      </div>
-
-                      <div className={dmStyles.panel}>
-                        <div className={dmStyles.panelHead}>
-                          <strong>한국어 해석</strong>
-                          <span className={dmStyles.translationPending}>
-                            {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 갱신 대기" : "읽기 전용"}
-                          </span>
-                        </div>
-                        <div className={dmStyles.translation}>{draft.koreanText}</div>
-                      </div>
-                    </div>
-
-                    <div className={dmStyles.rowFooter}>
-                      <button
-                        className={dmStyles.passButton}
-                        type="button"
-                        onClick={() => approveDmDraft(draft.handle)}
-                        disabled={draft.approved || Boolean(dmApprovingHandle)}
-                      >
-                        {draft.approved ? "통과 완료" : dmApprovingHandle === draft.handle ? "처리 중…" : "통과"}
-                      </button>
-                    </div>
-                  </section>
-                ))}
+            <div className={dmStyles.reviewHead}>
+              <div className={dmStyles.reviewHeadCell}>
+                <strong>일본어 전체</strong>
+                <button className="secondary" type="button" onClick={copyAllDmText}>전체 복사</button>
               </div>
+              <div className={dmStyles.reviewHeadCell}>
+                <strong>한국어 전체</strong>
+                <span className={dmStyles.readOnlyLabel}>읽기 전용</span>
+              </div>
+            </div>
+
+            <div className={dmStyles.reviewBody}>
+              {dmDrafts.map((draft) => (
+                <div className={dmStyles.reviewRow} key={draft.handle}>
+                  <div className={dmStyles.reviewCell}>
+                    <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
+                    <textarea
+                      className={dmStyles.streamTextarea}
+                      value={draft.japaneseText}
+                      disabled={draft.approved || Boolean(dmApprovingHandle)}
+                      rows={5}
+                      onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
+                      onBlur={() => translateDmDraft(draft.handle)}
+                    />
+                  </div>
+                  <div className={`${dmStyles.reviewCell} ${dmStyles.translationCell}`}>
+                    <div className={dmStyles.translationHead}>
+                      <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
+                      <span className={dmStyles.translationPending}>
+                        {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 갱신 대기" : ""}
+                      </span>
+                    </div>
+                    <div className={dmStyles.streamTranslation}>{draft.koreanText}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className={dmStyles.footer}>
+              <button
+                className={dmStyles.passButton}
+                type="button"
+                onClick={approveAllDmDrafts}
+                disabled={Boolean(dmApprovingHandle) || dmDrafts.every((draft) => draft.approved)}
+              >
+                {dmDrafts.every((draft) => draft.approved)
+                  ? "통과 완료"
+                  : dmApprovingHandle === BULK_APPROVAL_HANDLE
+                    ? "전체 통과 처리 중…"
+                    : "통과"}
+              </button>
             </div>
           </section>
         </div>
