@@ -445,7 +445,7 @@ export function DiscoveryConsole() {
 
   async function translateDmDraft(handle: string) {
     const draft = dmDrafts.find((item) => item.handle === handle);
-    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle === handle) return;
+    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle) return;
     const japaneseText = draft.japaneseText.trim();
     if (!japaneseText) return;
 
@@ -482,8 +482,8 @@ export function DiscoveryConsole() {
   async function approveDmDraft(handle: string) {
     const draft = dmDrafts.find((item) => item.handle === handle);
     if (!draft || draft.approved || dmApprovingHandle) return;
-    const japaneseText = draft.japaneseText.trim();
-    if (!japaneseText) {
+    const japaneseText = draft.japaneseText;
+    if (!japaneseText.trim()) {
       setToast({ kind: "error", message: "일본어 DM 원문이 비어 있습니다." });
       return;
     }
