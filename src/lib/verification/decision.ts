@@ -9,7 +9,7 @@ export type VerificationDecisionInput = {
   exists: boolean | null;
   isPrivate: boolean | null;
   isPersonalCreator: boolean | null;
-  bio: string | null;
+  bio?: string | null;
   followers: number | null;
   recentActivity: boolean | null;
   japaneseTarget: boolean | null;
@@ -78,7 +78,7 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
     category: input.category,
     followers,
     reelAverage: input.reelMetrics.average,
-    bio: input.bio,
+    bio: input.bio ?? null,
   });
 
   if (priority === "제외") {
