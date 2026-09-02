@@ -106,9 +106,57 @@
   display: grid;
   flex: 1 1 auto;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 280px;
+  min-height: 320px;
   height: min(640px, calc(100vh - 220px));
   overflow: hidden;
+}
+
+.bulkEditor {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #fff;
+}
+
+.bulkTextarea {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  padding: 18px;
+  color: #252c35;
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  outline: none;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.bulkTextarea:focus {
+  box-shadow: inset 0 0 0 3px rgba(49, 130, 246, .08);
+}
+
+.bulkTextarea:disabled {
+  color: #4e5968;
+  background: #fafbfc;
+}
+
+.parseError {
+  flex: 0 0 auto;
+  border-top: 1px solid #ffd8d8;
+  padding: 10px 14px;
+  color: #c92a2a;
+  background: #fff5f5;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .reviewStream {
@@ -119,7 +167,8 @@
   scrollbar-gutter: stable;
 }
 
-.reviewStream + .reviewStream {
+.reviewStream + .reviewStream,
+.bulkEditor + .reviewStream {
   border-left: 1px solid #e5e8eb;
 }
 
@@ -145,32 +194,6 @@
   font-weight: 800;
 }
 
-.streamTextarea {
-  display: block;
-  width: 100%;
-  min-height: 116px;
-  border: 0;
-  padding: 0;
-  color: #252c35;
-  background: transparent;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.65;
-  outline: none;
-  resize: vertical;
-  white-space: pre-wrap;
-}
-
-.streamTextarea:focus {
-  border-radius: 8px;
-  box-shadow: 0 0 0 3px rgba(49, 130, 246, .08);
-}
-
-.streamTextarea:disabled {
-  color: #4e5968;
-  resize: none;
-}
-
 .translationHead {
   display: flex;
   align-items: baseline;
@@ -179,33 +202,145 @@
 }
 
 .streamTranslation {
-  min-height: 116px;
+  min-height: 84px;
   color: #4e5968;
   font-size: 14px;
   line-height: 1.65;
   white-space: pre-wrap;
 }
 
+.confirmBody {
+  flex: 1 1 auto;
+  min-height: 320px;
+  max-height: min(680px, calc(100vh - 165px));
+  overflow-y: auto;
+  padding: 0 22px;
+  scrollbar-gutter: stable;
+}
+
+.launcherSummary {
+  display: grid;
+  gap: 7px;
+  margin: 18px 0 4px;
+  border: 1px solid #e5e8eb;
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: #fafbfc;
+}
+
+.launcherSummary strong {
+  color: #333d4b;
+  font-size: 13px;
+}
+
+.launcherSummary code {
+  overflow-wrap: anywhere;
+  color: #4e5968;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.launcherSummary span {
+  color: #8b95a1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.confirmItem {
+  padding: 20px 0;
+  border-bottom: 1px solid #edf0f2;
+}
+
+.confirmItem:last-child {
+  border-bottom: 0;
+}
+
+.confirmHandle {
+  display: block;
+  margin-bottom: 9px;
+  color: #252c35;
+  font-size: 15px;
+}
+
+.confirmLabel {
+  margin-bottom: 6px;
+  color: #8b95a1;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.confirmDm {
+  margin: 0;
+  border: 1px solid #edf0f2;
+  border-radius: 10px;
+  padding: 12px 13px;
+  color: #333d4b;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.promptDetails {
+  margin-top: 10px;
+}
+
+.promptDetails summary {
+  color: #4e5968;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.promptPreview {
+  max-height: 260px;
+  margin: 9px 0 0;
+  overflow: auto;
+  border-radius: 10px;
+  padding: 12px 13px;
+  color: #4e5968;
+  background: #f7f8fa;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .footer {
   display: flex;
   flex: 0 0 auto;
-  justify-content: center;
+  justify-content: flex-end;
+  gap: 9px;
   padding: 15px 22px 18px;
   border-top: 1px solid #e5e8eb;
   background: #fff;
 }
 
+.secondaryFooterButton,
 .passButton {
-  min-width: 132px;
-  border: 0;
+  min-width: 112px;
   border-radius: 13px;
   padding: 10px 20px;
-  color: #fff;
-  background: #3182f6;
   cursor: pointer;
   font-weight: 800;
 }
 
+.secondaryFooterButton {
+  border: 1px solid #dfe3e8;
+  color: #4e5968;
+  background: #fff;
+}
+
+.passButton {
+  border: 0;
+  color: #fff;
+  background: #3182f6;
+}
+
+.secondaryFooterButton:disabled,
 .passButton:disabled {
   opacity: .5;
   cursor: not-allowed;
@@ -231,9 +366,10 @@
 @media (max-width: 760px) {
   .backdrop { padding: 12px; }
   .modal { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
-  .reviewBody { min-height: 220px; height: calc(100vh - 220px); }
+  .reviewBody { min-height: 240px; height: calc(100vh - 220px); }
   .reviewHeadCell { padding: 10px 12px; }
+  .bulkTextarea,
   .reviewItem { padding: 14px 12px; }
-  .streamTextarea,
-  .streamTranslation { min-height: 100px; }
+  .confirmBody { padding: 0 14px; }
+  .footer { padding: 12px 14px 15px; }
 }
