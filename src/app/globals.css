@@ -169,16 +169,19 @@ h1 {
   margin-left: auto;
 }
 .control-actions .primary { margin-left: 0; }
-.history-control { position: relative; }
+.history-control {
+  position: relative;
+  margin-right: 24px;
+}
 .history-button {
   border: 0;
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 12px 22px;
   color: #4e5968;
   background: #f2f4f6;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: 400;
 }
 .history-button:hover { background: #e9edf2; }
 .history-popover {
