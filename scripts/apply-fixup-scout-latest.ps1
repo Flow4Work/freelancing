@@ -84,13 +84,39 @@ if ($localHead -ne $originHead) {
 }
 
 Write-Host "`n[2/6] 로컬 변경 안전 보존 후 최신 코드 반영" -ForegroundColor Cyan
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$preserveRoot = Join-Path $env:TEMP "fixup-scout-preserve-$stamp"
+$movedUntracked = New-Object "System.Collections.Generic.List[string]"
+$preservedDifferences = New-Object "System.Collections.Generic.List[string]"
+
+# 현재 로컬에서는 untracked지만 최신 origin에서는 tracked가 된 파일은 stash 복원 시 충돌한다.
+# 먼저 repo 밖 TEMP로 옮겨 원본을 보존하고, 최신 코드 반영 후 동일 여부를 비교한다.
+$untrackedPaths = @(& git -C $Repo ls-files --others --exclude-standard)
+Assert-LastExitCode "untracked 파일 확인 실패"
+foreach ($gitPathRaw in $untrackedPaths) {
+  $gitPath = $gitPathRaw.Trim()
+  if (-not $gitPath) { continue }
+
+  & git -C $Repo cat-file -e "${originRef}:$gitPath" 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    $sourcePath = Join-Path $Repo ($gitPath -replace "/", "\")
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { continue }
+
+    $backupPath = Join-Path $preserveRoot ($gitPath -replace "/", "\")
+    $backupParent = Split-Path -Parent $backupPath
+    if ($backupParent) { New-Item -ItemType Directory -Force -Path $backupParent | Out-Null }
+    Move-Item -LiteralPath $sourcePath -Destination $backupPath -Force
+    $movedUntracked.Add($gitPath)
+    Write-Host "origin과 겹치는 untracked 원본 임시 보존: $gitPath" -ForegroundColor DarkGray
+  }
+}
+
 $statusLines = @(& git -C $Repo status --porcelain=v1 --untracked-files=all)
 Assert-LastExitCode "로컬 변경 확인 실패"
 $stashRef = $null
 $stashCommit = $null
 
 if ($statusLines.Count -gt 0) {
-  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $stashMessage = "fixup-scout-auto-sync-$stamp"
   & git -C $Repo stash push --include-untracked -m $stashMessage
   Assert-LastExitCode "로컬 변경 임시 보존 실패"
@@ -113,21 +139,50 @@ try {
   if ($stashCommit) {
     & git -C $Repo stash apply --index $stashCommit
     if ($LASTEXITCODE -ne 0) {
-      Write-Host "`n실제 충돌 파일:" -ForegroundColor Yellow
+      Write-Host "`n실제 3-way 충돌 파일:" -ForegroundColor Yellow
       & git -C $Repo status --short
       Write-Host "`n로컬 변경은 $stashRef 에 그대로 보존되어 있습니다." -ForegroundColor Yellow
-      throw "실제 3-way 충돌이 발생했습니다. 자동으로 어느 쪽도 버리지 않았습니다."
+      throw "실제 코드 충돌이 발생했습니다. 자동으로 어느 쪽도 버리지 않았습니다."
     }
 
     & git -C $Repo stash drop $stashRef
     Assert-LastExitCode "적용 완료 후 임시 stash 정리 실패"
-    Write-Host "기존 로컬 변경 재적용 완료" -ForegroundColor Green
+    Write-Host "기존 tracked/untracked 로컬 변경 재적용 완료" -ForegroundColor Green
+  }
+
+  # 최신 origin에 새로 생긴 파일과 이전 untracked 파일이 동일하면 최신 tracked 파일을 그대로 사용한다.
+  # 다르면 이전 로컬 파일은 TEMP에 남겨 데이터 유실 없이 최신 origin 파일을 사용한다.
+  foreach ($gitPath in $movedUntracked) {
+    $backupPath = Join-Path $preserveRoot ($gitPath -replace "/", "\")
+    $currentPath = Join-Path $Repo ($gitPath -replace "/", "\")
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { continue }
+
+    if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
+      $oldHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+      $newHash = (Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash
+      if ($oldHash -eq $newHash) {
+        Remove-Item -LiteralPath $backupPath -Force
+      } else {
+        $preservedDifferences.Add($gitPath)
+      }
+    } else {
+      $currentParent = Split-Path -Parent $currentPath
+      if ($currentParent) { New-Item -ItemType Directory -Force -Path $currentParent | Out-Null }
+      Copy-Item -LiteralPath $backupPath -Destination $currentPath
+    }
   }
 } catch {
-  if ($stashCommit) {
-    Write-Host "보존된 로컬 변경: $stashRef" -ForegroundColor Yellow
-  }
+  if ($stashRef) { Write-Host "보존된 로컬 변경: $stashRef" -ForegroundColor Yellow }
+  if ($movedUntracked.Count -gt 0) { Write-Host "보존된 untracked 원본: $preserveRoot" -ForegroundColor Yellow }
   throw
+}
+
+if ($preservedDifferences.Count -gt 0) {
+  Write-Host "`n최신 origin과 내용이 다른 이전 untracked 파일은 덮어쓰지 않고 TEMP에 보존했습니다:" -ForegroundColor Yellow
+  foreach ($gitPath in $preservedDifferences) { Write-Host " - $gitPath" }
+  Write-Host "보존 위치: $preserveRoot" -ForegroundColor Yellow
+} elseif (Test-Path -LiteralPath $preserveRoot) {
+  Remove-Item -LiteralPath $preserveRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $afterHead = (& git -C $Repo rev-parse HEAD).Trim()
