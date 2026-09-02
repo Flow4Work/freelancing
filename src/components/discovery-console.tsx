@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCandidateViewState, getSearchStageViewState, type CandidateViewState } from "@/lib/discovery/presentation";
 import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
+import { buildDmInputPrompt } from "@/lib/dm/opencode-prompt";
 import dmStyles from "./dm-workflow.module.css";
 
 type Health = {
@@ -14,6 +15,7 @@ type Health = {
 type Toast = { kind: "success" | "error"; message: string } | null;
 type StatusFilter = "all" | CandidateViewState | "send_confirmation";
 type AutomationMode = "duplicate" | "instagram";
+type DmReviewStep = "edit" | "confirm";
 
 type AutomationRunResponse = {
   ok: boolean;
@@ -98,6 +100,10 @@ type AutomationHistoryResponse = {
   error?: string;
 };
 
+type BulkDmParseResult =
+  | { ok: true; messages: Map<string, string> }
+  | { ok: false; error: string };
+
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
@@ -112,6 +118,7 @@ const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" 
 const ACTION_SLOT_WIDTH = 118;
 const AUTOMATION_WATCH_MS = 3 * 60 * 60 * 1000;
 const BULK_APPROVAL_HANDLE = "__all__";
+const PREVIEW_CONTACT_ID = "<전송 시 승인 ID 생성>";
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -126,6 +133,10 @@ export function DiscoveryConsole() {
   const [dmTranslatingHandle, setDmTranslatingHandle] = useState<string | null>(null);
   const [dmApprovingHandle, setDmApprovingHandle] = useState<string | null>(null);
   const [dmDrafts, setDmDrafts] = useState<DmDraft[]>([]);
+  const [dmBulkJapaneseText, setDmBulkJapaneseText] = useState("");
+  const [dmReviewStep, setDmReviewStep] = useState<DmReviewStep>("edit");
+  const [dmParseError, setDmParseError] = useState<string | null>(null);
+  const [dmReviewPreparing, setDmReviewPreparing] = useState(false);
   const [dmModalOpen, setDmModalOpen] = useState(false);
   const [dmContacts, setDmContacts] = useState<DmContact[]>([]);
   const [dmContactsLoading, setDmContactsLoading] = useState(false);
@@ -155,6 +166,9 @@ export function DiscoveryConsole() {
     setHistoryItems([]);
     setExpandedHistoryId(null);
     setDmDrafts([]);
+    setDmBulkJapaneseText("");
+    setDmReviewStep("edit");
+    setDmParseError(null);
     setDmModalOpen(false);
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
@@ -405,13 +419,21 @@ export function DiscoveryConsole() {
 
       if (singleHandle) {
         const replacement = items[0];
-        setDmDrafts((current) => current.map((draft) => (
-          draft.handle === singleHandle
-            ? { ...replacement, translationDirty: false, approved: false }
-            : draft
-        )));
+        setDmDrafts((current) => {
+          const next = current.map((draft) => (
+            draft.handle === singleHandle
+              ? { ...replacement, translationDirty: false, approved: false }
+              : draft
+          ));
+          setDmBulkJapaneseText(formatBulkDmText(next));
+          return next;
+        });
       } else {
-        setDmDrafts(items.map((item) => ({ ...item, translationDirty: false, approved: false })));
+        const nextDrafts = items.map((item) => ({ ...item, translationDirty: false, approved: false }));
+        setDmDrafts(nextDrafts);
+        setDmBulkJapaneseText(formatBulkDmText(nextDrafts));
+        setDmReviewStep("edit");
+        setDmParseError(null);
         setDmModalOpen(true);
       }
 
@@ -433,14 +455,6 @@ export function DiscoveryConsole() {
     }
   }
 
-  function updateDmJapanese(handle: string, japaneseText: string) {
-    setDmDrafts((current) => current.map((draft) => (
-      draft.handle === handle
-        ? { ...draft, japaneseText, translationDirty: true }
-        : draft
-    )));
-  }
-
   async function requestDmTranslation(japaneseText: string) {
     const response = await fetch("/api/dm/translate", {
       method: "POST",
@@ -453,19 +467,64 @@ export function DiscoveryConsole() {
   }
 
   async function copyAllDmText() {
-    const text = dmDrafts
-      .map((draft) => `@${draft.handle}\n${draft.japaneseText}`)
-      .join("\n\n");
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(dmBulkJapaneseText);
       setToast({ kind: "success", message: "전체 복사 완료" });
     } catch {
       setToast({ kind: "error", message: "클립보드 복사에 실패했습니다." });
     }
   }
 
+  async function prepareDmFinalReview() {
+    if (!dmDrafts.length || dmReviewPreparing || dmApprovingHandle) return;
+
+    const parsed = parseBulkDmText(dmBulkJapaneseText, dmDrafts.map((draft) => draft.handle));
+    if (!parsed.ok) {
+      setDmParseError(parsed.error);
+      setToast({ kind: "error", message: parsed.error });
+      return;
+    }
+
+    setDmParseError(null);
+    setDmReviewPreparing(true);
+    setToast(null);
+
+    let working = dmDrafts.map((draft) => {
+      const japaneseText = parsed.messages.get(draft.handle) ?? "";
+      return {
+        ...draft,
+        japaneseText,
+        translationDirty: draft.translationDirty || japaneseText !== draft.japaneseText,
+      };
+    });
+    setDmDrafts(working.map((item) => ({ ...item })));
+
+    try {
+      for (let index = 0; index < working.length; index += 1) {
+        const draft = working[index];
+        if (!draft.translationDirty) continue;
+        setDmTranslatingHandle(draft.handle);
+        const koreanText = await requestDmTranslation(draft.japaneseText);
+        working[index] = { ...draft, koreanText, translationDirty: false };
+        setDmDrafts(working.map((item) => ({ ...item })));
+      }
+
+      setDmTranslatingHandle(null);
+      setDmDrafts(working.map((item) => ({ ...item })));
+      setDmBulkJapaneseText(formatBulkDmText(working));
+      setDmReviewStep("confirm");
+      setToast({ kind: "success", message: "최종 확인 준비 완료 · 아직 OpenCode는 실행하지 않았습니다." });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "최종 일본어 기준 한국어 동기화 실패";
+      setToast({ kind: "error", message });
+    } finally {
+      setDmTranslatingHandle(null);
+      setDmReviewPreparing(false);
+    }
+  }
+
   async function approveAllDmDrafts() {
-    if (!dmDrafts.length || dmApprovingHandle) return;
+    if (dmReviewStep !== "confirm" || !dmDrafts.length || dmApprovingHandle) return;
     const pending = dmDrafts.filter((draft) => !draft.approved);
     if (!pending.length) return;
     const empty = pending.find((draft) => !draft.japaneseText.trim());
@@ -505,7 +564,7 @@ export function DiscoveryConsole() {
           }),
         });
         const payload = await response.json() as DmContactsResponse;
-        if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? `@${draft.handle} DM 통과 처리 실패`);
+        if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? `@${draft.handle} DM 전송 준비 실패`);
 
         working[index] = {
           ...draft,
@@ -519,12 +578,12 @@ export function DiscoveryConsole() {
       }
 
       await reloadDmContacts(category);
-      setToast({ kind: "success", message: "OpenCode가 작업을 시작합니다." });
+      setToast({ kind: "success", message: "OpenCode가 승인된 DM 입력 작업을 시작합니다. 자동 전송은 하지 않습니다." });
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "DM 전체 통과 처리 실패";
+      const message = caught instanceof Error ? caught.message : "DM 전체 전송 준비 실패";
       setToast({
         kind: "error",
-        message: approvedCount > 0 ? `전체 통과 ${approvedCount}/${pending.length}명 처리 후 중단 · ${message}` : message,
+        message: approvedCount > 0 ? `전송 준비 ${approvedCount}/${pending.length}명 처리 후 중단 · ${message}` : message,
       });
     } finally {
       setDmTranslatingHandle(null);
@@ -665,74 +724,134 @@ export function DiscoveryConsole() {
       </section>
 
       {dmModalOpen && dmDrafts.length > 0 && (
-        <div className={dmStyles.backdrop} role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !dmApprovingHandle) setDmModalOpen(false);
-        }}>
+        <div
+          className={dmStyles.backdrop}
+          role="presentation"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+        >
           <section className={dmStyles.modal} role="dialog" aria-modal="true" aria-label={`DM 준비 · ${dmDrafts.length}명`}>
             <div className={dmStyles.modalHead}>
               <div className={dmStyles.modalTitle}>
-                <strong>DM 준비</strong>
+                <strong>{dmReviewStep === "edit" ? "DM 준비" : "DM 최종 확인"}</strong>
                 <span>· {dmDrafts.length}명</span>
               </div>
-              <button className={dmStyles.closeButton} type="button" aria-label="닫기" onClick={() => setDmModalOpen(false)} disabled={Boolean(dmApprovingHandle)}>×</button>
-            </div>
-
-            <div className={dmStyles.reviewHead}>
-              <div className={dmStyles.reviewHeadCell}>
-                <strong>일본어 전체</strong>
-                <button className="secondary" type="button" onClick={copyAllDmText}>전체 복사</button>
-              </div>
-              <div className={dmStyles.reviewHeadCell}>
-                <strong>한국어 전체</strong>
-                <span className={dmStyles.readOnlyLabel}>읽기 전용</span>
-              </div>
-            </div>
-
-            <div className={dmStyles.reviewBody}>
-              <div className={dmStyles.reviewStream}>
-                {dmDrafts.map((draft) => (
-                  <div className={dmStyles.reviewItem} key={`ja-${draft.handle}`}>
-                    <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
-                    <textarea
-                      className={dmStyles.streamTextarea}
-                      value={draft.japaneseText}
-                      disabled={draft.approved || Boolean(dmApprovingHandle)}
-                      rows={5}
-                      onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              <div className={`${dmStyles.reviewStream} ${dmStyles.translationStream}`}>
-                {dmDrafts.map((draft) => (
-                  <div className={dmStyles.reviewItem} key={`ko-${draft.handle}`}>
-                    <div className={dmStyles.translationHead}>
-                      <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
-                      <span className={dmStyles.translationPending}>
-                        {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 통과 시 갱신" : ""}
-                      </span>
-                    </div>
-                    <div className={dmStyles.streamTranslation}>{draft.koreanText}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className={dmStyles.footer}>
               <button
-                className={dmStyles.passButton}
+                className={dmStyles.closeButton}
                 type="button"
-                onClick={approveAllDmDrafts}
-                disabled={Boolean(dmApprovingHandle) || dmDrafts.every((draft) => draft.approved)}
-              >
-                {dmDrafts.every((draft) => draft.approved)
-                  ? "통과 완료"
-                  : dmApprovingHandle === BULK_APPROVAL_HANDLE
-                    ? "전체 통과 처리 중…"
-                    : "통과"}
-              </button>
+                aria-label="닫기"
+                onClick={() => setDmModalOpen(false)}
+                disabled={dmReviewPreparing || Boolean(dmApprovingHandle)}
+              >×</button>
             </div>
+
+            {dmReviewStep === "edit" ? (
+              <>
+                <div className={dmStyles.reviewHead}>
+                  <div className={dmStyles.reviewHeadCell}>
+                    <strong>일본어 전체</strong>
+                    <button className="secondary" type="button" onClick={copyAllDmText}>전체 복사</button>
+                  </div>
+                  <div className={dmStyles.reviewHeadCell}>
+                    <strong>한국어 전체</strong>
+                    <span className={dmStyles.readOnlyLabel}>다음 클릭 시 변경 후보만 갱신</span>
+                  </div>
+                </div>
+
+                <div className={dmStyles.reviewBody}>
+                  <div className={dmStyles.bulkEditor}>
+                    <textarea
+                      className={dmStyles.bulkTextarea}
+                      aria-label="일본어 전체 DM 편집"
+                      value={dmBulkJapaneseText}
+                      disabled={dmReviewPreparing || Boolean(dmApprovingHandle)}
+                      onChange={(event) => {
+                        setDmBulkJapaneseText(event.target.value);
+                        if (dmParseError) setDmParseError(null);
+                      }}
+                      spellCheck={false}
+                    />
+                    {dmParseError && <div className={dmStyles.parseError}>{dmParseError}</div>}
+                  </div>
+
+                  <div className={`${dmStyles.reviewStream} ${dmStyles.translationStream}`}>
+                    {dmDrafts.map((draft) => (
+                      <div className={dmStyles.reviewItem} key={`ko-${draft.handle}`}>
+                        <div className={dmStyles.translationHead}>
+                          <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
+                          <span className={dmStyles.translationPending}>
+                            {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : ""}
+                          </span>
+                        </div>
+                        <div className={dmStyles.streamTranslation}>{draft.koreanText}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className={dmStyles.footer}>
+                  <button
+                    className={dmStyles.passButton}
+                    type="button"
+                    onClick={prepareDmFinalReview}
+                    disabled={dmReviewPreparing || Boolean(dmApprovingHandle)}
+                  >
+                    {dmReviewPreparing ? "확인 준비 중…" : "다음"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className={dmStyles.confirmBody}>
+                  <div className={dmStyles.launcherSummary}>
+                    <strong>OpenCode 실행 방식</strong>
+                    <code>opencode run "첨부된 FixUp Scout DM 입력 지시만 실행해. 승인 원문을 입력창에 그대로 넣고 절대 전송하지 마." --file [승인 후 생성되는 프롬프트 파일]</code>
+                    <span>아래 프롬프트의 contactId만 전송 시 실제 승인 ID로 바뀌며, @handle과 일본어 원문은 그대로 전달됩니다.</span>
+                  </div>
+
+                  {dmDrafts.map((draft) => (
+                    <section className={dmStyles.confirmItem} key={`confirm-${draft.handle}`}>
+                      <strong className={dmStyles.confirmHandle}>@{draft.handle}</strong>
+                      <div className={dmStyles.confirmLabel}>Instagram에 입력될 최종 일본어 DM</div>
+                      <pre className={dmStyles.confirmDm}>{draft.japaneseText}</pre>
+                      <details className={dmStyles.promptDetails}>
+                        <summary>OpenCode 전달 프롬프트 확인</summary>
+                        <pre className={dmStyles.promptPreview}>{buildDmInputPrompt({
+                          contactId: PREVIEW_CONTACT_ID,
+                          handle: draft.handle,
+                          approvedJapaneseText: draft.japaneseText,
+                        })}</pre>
+                      </details>
+                    </section>
+                  ))}
+                </div>
+
+                <div className={dmStyles.footer}>
+                  <button
+                    className={dmStyles.secondaryFooterButton}
+                    type="button"
+                    onClick={() => setDmReviewStep("edit")}
+                    disabled={Boolean(dmApprovingHandle)}
+                  >수정하기</button>
+                  <button
+                    className={dmStyles.passButton}
+                    type="button"
+                    onClick={approveAllDmDrafts}
+                    disabled={Boolean(dmApprovingHandle) || dmDrafts.every((draft) => draft.approved)}
+                  >
+                    {dmDrafts.every((draft) => draft.approved)
+                      ? "전송 준비 완료"
+                      : dmApprovingHandle === BULK_APPROVAL_HANDLE
+                        ? "OpenCode 실행 중…"
+                        : "전송"}
+                  </button>
+                </div>
+              </>
+            )}
           </section>
         </div>
       )}
@@ -928,6 +1047,78 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
       ))}
     </span>
   );
+}
+
+function formatBulkDmText(drafts: Array<Pick<DmDraft, "handle" | "japaneseText">>) {
+  return drafts.map((draft) => `@${draft.handle}\n${draft.japaneseText}`).join("\n\n");
+}
+
+function parseBulkDmText(value: string, expectedHandles: string[]): BulkDmParseResult {
+  const normalized = value.replace(/\r\n?/g, "\n");
+  const expected = new Set(expectedHandles.map((handle) => handle.toLowerCase()));
+  const messages = new Map<string, string>();
+  const lines = normalized.split("\n");
+  let currentHandle: string | null = null;
+  let currentBody: string[] = [];
+  let prefixHasContent = false;
+
+  const commitCurrent = (): BulkDmParseResult | null => {
+    if (!currentHandle) return null;
+    const bodyLines = [...currentBody];
+    while (bodyLines.length && bodyLines[0] === "") bodyLines.shift();
+    while (bodyLines.length && bodyLines[bodyLines.length - 1] === "") bodyLines.pop();
+    const body = bodyLines.join("\n");
+    if (!body.trim()) {
+      return { ok: false, error: `DM 본문이 비어 있습니다: @${currentHandle}` };
+    }
+    if (messages.has(currentHandle)) {
+      return { ok: false, error: `중복 handle이 있습니다: @${currentHandle}` };
+    }
+    messages.set(currentHandle, body);
+    return null;
+  };
+
+  for (const line of lines) {
+    const handleMatch = line.match(/^\s*@([A-Za-z0-9._]{1,80})\s*$/);
+    if (handleMatch) {
+      const previousError = commitCurrent();
+      if (previousError) return previousError;
+
+      const handle = handleMatch[1].toLowerCase();
+      if (!expected.has(handle)) {
+        return { ok: false, error: `선택된 후보에 없는 handle입니다: @${handle}` };
+      }
+      if (messages.has(handle)) {
+        return { ok: false, error: `중복 handle이 있습니다: @${handle}` };
+      }
+      currentHandle = handle;
+      currentBody = [];
+      continue;
+    }
+
+    if (!currentHandle) {
+      if (line.trim()) prefixHasContent = true;
+      continue;
+    }
+    currentBody.push(line);
+  }
+
+  const finalError = commitCurrent();
+  if (finalError) return finalError;
+
+  if (prefixHasContent) {
+    return { ok: false, error: "첫 @handle 앞에 분리할 수 없는 내용이 있습니다. 전체 텍스트는 @handle 줄부터 시작해야 합니다." };
+  }
+  if (!messages.size) {
+    return { ok: false, error: `@handle 구분자를 찾지 못했습니다. 필요한 후보: ${expectedHandles.map((handle) => `@${handle}`).join(", ")}` };
+  }
+
+  const missing = expectedHandles.filter((handle) => !messages.has(handle.toLowerCase()));
+  if (missing.length) {
+    return { ok: false, error: `선택된 후보가 빠졌습니다: ${missing.map((handle) => `@${handle}`).join(", ")}` };
+  }
+
+  return { ok: true, messages };
 }
 
 function stateLabel(state: CandidateViewState) {
