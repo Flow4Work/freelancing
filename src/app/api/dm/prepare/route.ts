@@ -36,6 +36,14 @@ export async function POST(request: Request) {
       preparedCount: prepared.length,
       providerCounts,
       models: [...new Set(prepared.map((item) => item.model))],
+      items: prepared.map((item) => ({
+        handle: item.handle,
+        japaneseText: item.dmText,
+        koreanText: item.koreanText,
+        generatedAt: item.generatedAt,
+        provider: item.provider,
+        model: item.model,
+      })),
     });
   } catch (error) {
     console.error("dm_prepare_failed", error);
