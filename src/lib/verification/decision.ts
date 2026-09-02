@@ -61,7 +61,6 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
     || input.japaneseTarget === null
     || input.koreaConnection === null
     || input.categoryRelevant === null
-    || input.recentActivity === null
     || input.followers === null;
 
   if (coreUnknown) {
