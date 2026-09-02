@@ -39,10 +39,13 @@ type AutomationHistoryGroup = {
 type AutomationHistoryItem = {
   id: string;
   mode: AutomationMode;
-  status: "pending" | "completed";
+  status: "pending" | "completed" | "failed";
   candidateCount: number;
+  processedCount: number;
   createdAt: string;
   completedAt: string | null;
+  failedAt: string | null;
+  failureMessage: string | null;
   destination: string;
   destinationCount: number;
   excludedCount: number;
@@ -69,6 +72,7 @@ const PROGRESS_STAGES = [
 const RECOMMENDED_BADGE_STYLE = { color: "#d6336c", background: "#fff0f6" };
 const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" };
 const ACTION_SLOT_WIDTH = 118;
+const AUTOMATION_WATCH_MS = 3 * 60 * 60 * 1000;
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -257,7 +261,7 @@ export function DiscoveryConsole() {
       const payload = await response.json() as AutomationRunResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "OpenCode 자동 실행 실패");
 
-      setAutomationWatchUntil(Date.now() + 10 * 60 * 1000);
+      setAutomationWatchUntil(Date.now() + AUTOMATION_WATCH_MS);
       setHistoryOpen(false);
       setExpandedHistoryId(null);
       setToast({
@@ -356,7 +360,7 @@ export function DiscoveryConsole() {
                             whiteSpace: "normal",
                           }}
                         >
-                          <span style={{ display: "block", color: "#333d4b", fontWeight: 800 }}>{historyTitle(item)}</span>
+                          <span style={{ display: "block", color: item.status === "failed" ? "#dc2626" : "#333d4b", fontWeight: 800 }}>{historyTitle(item)}</span>
                           <span style={{ display: "block", marginTop: 3, color: "#6b7684", lineHeight: 1.45 }}>{historyResultLine(item)}</span>
                           {expanded && <HistoryDetail item={item} />}
                         </button>
@@ -535,11 +539,16 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
 
 function historyTitle(item: AutomationHistoryItem) {
   const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
-  return `${action} ${item.candidateCount}명${item.status === "pending" ? " 진행 중" : " 완료"}`;
+  if (item.status === "pending") return `${action} ${item.processedCount}/${item.candidateCount} 진행 중`;
+  if (item.status === "failed") return `${action} ${item.processedCount}/${item.candidateCount} 실패`;
+  return `${action} ${item.candidateCount}명 완료`;
 }
 
 function historyResultLine(item: AutomationHistoryItem) {
-  if (item.status === "pending") return "결과를 기다리는 중입니다.";
+  if (item.status === "pending") {
+    return item.processedCount > 0 ? `현재 ${item.processedCount}명 결과 저장 완료` : "첫 결과를 기다리는 중입니다.";
+  }
+  if (item.status === "failed") return item.failureMessage ?? "작업이 완료 전에 중단되었습니다.";
   if (!item.groups.length) return "처리 결과가 없습니다.";
   return item.groups.map((group) => `${group.destination} ${group.handles.length}`).join(" · ");
 }
@@ -550,7 +559,7 @@ function historyTime(item: AutomationHistoryItem) {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(item.completedAt ?? item.createdAt));
+  }).format(new Date(item.completedAt ?? item.failedAt ?? item.createdAt));
 }
 
 function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
@@ -558,9 +567,14 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
   return (
     <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2" }}>
       <span style={{ display: "block", marginBottom: 7, color: "#6b7684", fontSize: 11 }}>
-        {historyTime(item)} · 처리 {item.candidateCount}명
+        {historyTime(item)} · 저장 {item.processedCount}/{item.candidateCount}명
       </span>
-      {!item.exactSnapshot && (
+      {item.status === "failed" && item.failureMessage && (
+        <span style={{ display: "block", marginBottom: 7, color: "#dc2626", lineHeight: 1.45 }}>
+          {item.failureMessage}
+        </span>
+      )}
+      {!item.exactSnapshot && item.status === "completed" && (
         <span style={{ display: "block", marginBottom: 7, color: "#8b95a1", fontSize: 11 }}>
           이전 실행 기록 · 현재 저장 상태 기준
         </span>
