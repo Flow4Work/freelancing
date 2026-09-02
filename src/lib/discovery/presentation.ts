@@ -10,6 +10,10 @@ export type CandidateViewState =
   | "unmapped";
 
 export function getSearchStageViewState(candidate: DiscoveryCandidate): "verification_needed" | "recommended" | "unmapped" {
+  // 후보 찾기 당시 저장된 판정을 우선 사용한다. 최종 검증에서 갱신된 프로필 값으로 원래 판정을 다시 계산하지 않는다.
+  if (candidate.candidateStatus === "search_qualified") return "recommended";
+  if (candidate.candidateStatus === "needs_review") return "verification_needed";
+
   const status = classifySearchStage({
     category: candidate.category,
     accountAvailability: candidate.accountAvailability,
