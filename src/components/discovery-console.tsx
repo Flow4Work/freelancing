@@ -452,27 +452,6 @@ export function DiscoveryConsole() {
     return payload.koreanText;
   }
 
-  async function translateDmDraft(handle: string) {
-    const draft = dmDrafts.find((item) => item.handle === handle);
-    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle || dmApprovingHandle) return;
-    const japaneseText = draft.japaneseText.trim();
-    if (!japaneseText) return;
-
-    setDmTranslatingHandle(handle);
-    try {
-      const koreanText = await requestDmTranslation(japaneseText);
-      setDmDrafts((current) => current.map((item) => (
-        item.handle === handle && item.japaneseText.trim() === japaneseText
-          ? { ...item, koreanText, translationDirty: false }
-          : item
-      )));
-    } catch (caught) {
-      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "한국어 번역 갱신 실패" });
-    } finally {
-      setDmTranslatingHandle(null);
-    }
-  }
-
   async function copyAllDmText() {
     const text = dmDrafts
       .map((draft) => `@${draft.handle}\n${draft.japaneseText}`)
@@ -715,14 +694,13 @@ export function DiscoveryConsole() {
                       disabled={draft.approved || Boolean(dmApprovingHandle)}
                       rows={5}
                       onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
-                      onBlur={() => translateDmDraft(draft.handle)}
                     />
                   </div>
                   <div className={`${dmStyles.reviewCell} ${dmStyles.translationCell}`}>
                     <div className={dmStyles.translationHead}>
                       <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
                       <span className={dmStyles.translationPending}>
-                        {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 갱신 대기" : ""}
+                        {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 통과 시 갱신" : ""}
                       </span>
                     </div>
                     <div className={dmStyles.streamTranslation}>{draft.koreanText}</div>
