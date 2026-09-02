@@ -46,9 +46,9 @@ export async function createApprovedDmContact(input: {
   const generatedAt = candidate.dm_generated_at ? String(candidate.dm_generated_at) : null;
   if (!generatedAt) throw new Error(`@${handle} DM 준비 생성 기록이 없습니다. 다시 생성하세요.`);
 
-  const japaneseText = input.japaneseText.trim();
+  const japaneseText = input.japaneseText;
   const koreanText = input.koreanText.trim();
-  if (!japaneseText || !koreanText) throw new Error("승인할 일본어/한국어 DM이 비어 있습니다.");
+  if (!japaneseText.trim() || !koreanText) throw new Error("승인할 일본어/한국어 DM이 비어 있습니다.");
 
   const { data, error } = await supabase
     .from("creator_dm_contact_history")
