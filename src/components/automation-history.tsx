@@ -20,6 +20,8 @@ type Item = {
   exactSnapshot: boolean;
 };
 
+const COMPLETED_ORANGE = "#f59e0b";
+
 export function AutomationHistory({ category }: { category: SearchCategory }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -50,7 +52,7 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
   }
 
   return (
-    <div style={{ position: "relative", flex: "0 0 auto" }}>
+    <div style={{ position: "relative", flex: "0 0 auto", marginRight: 18 }}>
       <button
         type="button"
         onClick={toggle}
@@ -58,12 +60,12 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
         style={{
           border: 0,
           borderRadius: 10,
-          padding: "8px 10px",
+          padding: "12px 20px",
           color: "#4e5968",
           background: "#f2f4f6",
           cursor: "pointer",
-          fontSize: 12,
-          fontWeight: 800,
+          fontSize: 14,
+          fontWeight: 400,
         }}
       >
         기록
@@ -97,6 +99,8 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
           ) : items.length ? (
             items.map((item) => {
               const expanded = expandedId === item.id;
+              const completed = item.status === "completed";
+              const recordColor = completed ? COMPLETED_ORANGE : "#333d4b";
               return (
                 <button
                   key={item.id}
@@ -117,8 +121,17 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
                     whiteSpace: "normal",
                   }}
                 >
-                  <span style={{ display: "block", color: "#333d4b", fontWeight: 800 }}>{title(item)}</span>
-                  <span style={{ display: "block", marginTop: 3, color: "#6b7684", lineHeight: 1.45 }}>{resultLine(item)}</span>
+                  <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <span style={{ color: recordColor, fontWeight: 800 }}>{title(item)}</span>
+                    {completed && (
+                      <span style={{ flex: "0 0 auto", color: COMPLETED_ORANGE, fontSize: 11, fontWeight: 400 }}>
+                        {completedTime(item)}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ display: "block", marginTop: 3, color: completed ? COMPLETED_ORANGE : "#6b7684", lineHeight: 1.45 }}>
+                    {resultLine(item)}
+                  </span>
                   {expanded && <Detail item={item} />}
                 </button>
               );
@@ -170,6 +183,14 @@ function Detail({ item }: { item: Item }) {
       ))}
     </span>
   );
+}
+
+function completedTime(item: Item) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(item.completedAt ?? item.createdAt));
 }
 
 function time(item: Item) {
