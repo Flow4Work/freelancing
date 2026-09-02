@@ -6,7 +6,13 @@ import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt
 import { getCandidateViewState } from "@/lib/discovery/presentation";
 import type { DiscoveryCandidate } from "@/lib/discovery/types";
 import { getAutomationCandidates, listCandidates } from "@/lib/supabase/candidates";
-import { createVerificationJob, listRecentVerificationJobs, type VerificationJobDestination, type VerificationJobResultGroup } from "@/lib/supabase/verification-jobs";
+import {
+  createVerificationJob,
+  failVerificationJob,
+  listRecentVerificationJobs,
+  type VerificationJobDestination,
+  type VerificationJobResultGroup,
+} from "@/lib/supabase/verification-jobs";
 
 export const runtime = "nodejs";
 
@@ -28,8 +34,23 @@ export async function GET(request: Request) {
     const candidateMap = new Map(candidates.map((candidate) => [candidate.handle, candidate]));
 
     const items = jobs.map((job) => {
+      const processedSet = new Set(job.processedHandles);
+      const remainingHandles = job.handles.filter((handle) => !processedSet.has(handle));
       const groups = job.resultSummary?.groups
-        ?? (job.status === "completed" ? buildLegacyGroups(job.handles, candidateMap) : []);
+        ?? (job.status === "completed"
+          ? buildLegacyGroups(job.handles, candidateMap)
+          : job.status === "failed"
+            ? [
+                ...buildLegacyGroups(job.processedHandles, candidateMap),
+                ...(remainingHandles.length
+                  ? [{
+                      destination: "미반영" as const,
+                      handles: remainingHandles,
+                      reasons: remainingHandles.map((handle) => ({ handle, reason: "작업 중단 전 미처리" })),
+                    }]
+                  : []),
+              ]
+            : []);
       const excludedCount = groupCount(groups, "제외");
       const unresolvedCount = groupCount(groups, "미반영");
       const destinationGroups = groups.filter((group) => group.destination !== "제외" && group.destination !== "미반영");
@@ -40,8 +61,11 @@ export async function GET(request: Request) {
         mode: job.jobKind,
         status: job.status,
         candidateCount: job.handles.length,
+        processedCount: job.processedHandles.length,
         createdAt: job.createdAt,
         completedAt: job.completedAt,
+        failedAt: job.failedAt,
+        failureMessage: job.failureMessage,
         destination: mainDestination?.destination ?? (job.jobKind === "duplicate" ? "중복 통과" : "최종 검증 완료"),
         destinationCount: mainDestination?.handles.length ?? 0,
         excludedCount,
@@ -59,6 +83,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  let jobId: string | null = null;
+
   try {
     assertLocalRequest(request);
     assertOpenCodeAvailable();
@@ -74,7 +100,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: `${label} 상태에서 실행할 후보가 없습니다.` }, { status: 409 });
     }
 
-    const jobId = await createVerificationJob(parsed.data.category, candidates.map((candidate) => candidate.handle), parsed.data.mode);
+    jobId = await createVerificationJob(parsed.data.category, candidates.map((candidate) => candidate.handle), parsed.data.mode);
     const prompt = parsed.data.mode === "duplicate"
       ? buildDuplicateCheckPrompt(candidates, parsed.data.category, jobId)
       : buildOpenCodeVerificationPrompt(candidates, parsed.data.category, jobId);
@@ -93,6 +119,13 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "OpenCode 자동 실행에 실패했습니다.";
+    if (jobId) {
+      try {
+        await failVerificationJob(jobId, `자동 실행 시작 실패: ${message}`);
+      } catch (failError) {
+        console.error("automation_job_fail_mark_failed", failError);
+      }
+    }
     console.error("automation_run_failed", error);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
