@@ -60,13 +60,13 @@ export type DiscoveryCandidate = {
   verificationNote: string | null;
   verificationStatus: VerificationStatus;
   verifiedAt: string | null;
-  dmPersonalizationSource: string | null;
-  dmPersonalizationBasis: string | null;
-  dmPersonalizationLine: string | null;
-  dmText: string | null;
-  dmProvider: DmProvider | null;
-  dmModel: string | null;
-  dmGeneratedAt: string | null;
+  dmPersonalizationSource?: string | null;
+  dmPersonalizationBasis?: string | null;
+  dmPersonalizationLine?: string | null;
+  dmText?: string | null;
+  dmProvider?: DmProvider | null;
+  dmModel?: string | null;
+  dmGeneratedAt?: string | null;
   discoveredAt: string;
 };
 
