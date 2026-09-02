@@ -11,7 +11,7 @@ export type ReelMetrics = {
 };
 
 export function computeReelMetrics(input: ReelSnapshot[]): ReelMetrics {
-  const normalized = dedupeAndOrder(input).slice(0, 10);
+  const normalized = dedupeAndOrder(input).slice(0, 6);
   const views = normalized
     .map((item) => item.views)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
@@ -21,6 +21,12 @@ export function computeReelMetrics(input: ReelSnapshot[]): ReelMetrics {
     : null;
 
   const median = views.length ? Math.round(calculateMedian(views)) : null;
+  const complete = normalized.length > 0 && normalized.every((item) => (
+    Boolean(item.url)
+    && typeof item.views === "number"
+    && Number.isFinite(item.views)
+    && item.views >= 0
+  ));
 
   return {
     snapshots: normalized,
@@ -29,7 +35,7 @@ export function computeReelMetrics(input: ReelSnapshot[]): ReelMetrics {
     sampleSize: views.length,
     checkedCount: views.length,
     totalConsidered: normalized.length,
-    status: views.length >= 5 ? "ready" : "insufficient",
+    status: complete ? "ready" : "insufficient",
   };
 }
 
