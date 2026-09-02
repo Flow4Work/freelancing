@@ -126,7 +126,6 @@ export function DiscoveryConsole() {
   const [dmApprovingHandle, setDmApprovingHandle] = useState<string | null>(null);
   const [dmDrafts, setDmDrafts] = useState<DmDraft[]>([]);
   const [dmModalOpen, setDmModalOpen] = useState(false);
-  const [dmIndex, setDmIndex] = useState(0);
   const [dmContacts, setDmContacts] = useState<DmContact[]>([]);
   const [dmContactsLoading, setDmContactsLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
@@ -156,7 +155,6 @@ export function DiscoveryConsole() {
     setExpandedHistoryId(null);
     setDmDrafts([]);
     setDmModalOpen(false);
-    setDmIndex(0);
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -413,7 +411,6 @@ export function DiscoveryConsole() {
         )));
       } else {
         setDmDrafts(items.map((item) => ({ ...item, translationDirty: false, approved: false })));
-        setDmIndex(0);
         setDmModalOpen(true);
       }
 
@@ -535,8 +532,6 @@ export function DiscoveryConsole() {
     }
   }
 
-  const currentDmDraft = dmDrafts[dmIndex] ?? null;
-
   return (
     <>
       <section className="card controls">
@@ -653,80 +648,76 @@ export function DiscoveryConsole() {
         ) : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
 
-      {dmModalOpen && currentDmDraft && (
+      {dmModalOpen && dmDrafts.length > 0 && (
         <div className={dmStyles.backdrop} role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setDmModalOpen(false);
         }}>
-          <section className={dmStyles.modal} role="dialog" aria-modal="true" aria-label={`@${currentDmDraft.handle} DM 준비`}>
+          <section className={dmStyles.modal} role="dialog" aria-modal="true" aria-label={`DM 준비 · ${dmDrafts.length}명`}>
             <div className={dmStyles.modalHead}>
               <div className={dmStyles.modalTitle}>
-                <strong>@{currentDmDraft.handle}</strong>
-                <span>{dmIndex + 1} / {dmDrafts.length}</span>
+                <strong>DM 준비</strong>
+                <span>· {dmDrafts.length}명</span>
               </div>
               <button className={dmStyles.closeButton} type="button" aria-label="닫기" onClick={() => setDmModalOpen(false)}>×</button>
             </div>
 
-            <div className={dmStyles.columns}>
-              <div className={dmStyles.panel}>
-                <div className={dmStyles.panelHead}>
-                  <strong>일본어 원문</strong>
-                  <div className={dmStyles.panelActions}>
-                    <button className="secondary" type="button" onClick={() => copyDmText(currentDmDraft.japaneseText)}>복사</button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      onClick={() => runDmPrepare([currentDmDraft.handle])}
-                      disabled={currentDmDraft.approved || dmRegeneratingHandle === currentDmDraft.handle}
-                    >
-                      {dmRegeneratingHandle === currentDmDraft.handle ? "생성 중…" : "다시 생성"}
-                    </button>
-                  </div>
-                </div>
-                <textarea
-                  className={dmStyles.textarea}
-                  value={currentDmDraft.japaneseText}
-                  disabled={currentDmDraft.approved}
-                  onChange={(event) => updateDmJapanese(currentDmDraft.handle, event.target.value)}
-                  onBlur={() => translateDmDraft(currentDmDraft.handle)}
-                />
-              </div>
+            <div className={dmStyles.modalBody}>
+              <div className={dmStyles.candidateList}>
+                {dmDrafts.map((draft) => (
+                  <section className={dmStyles.candidateRow} key={draft.handle}>
+                    <div className={dmStyles.candidateHead}>
+                      <strong className={dmStyles.candidateHandle}>@{draft.handle}</strong>
+                    </div>
 
-              <div className={dmStyles.panel}>
-                <div className={dmStyles.panelHead}>
-                  <strong>한국어 해석</strong>
-                  <span className={dmStyles.translationPending}>
-                    {dmTranslatingHandle === currentDmDraft.handle ? "번역 갱신 중…" : currentDmDraft.translationDirty ? "수정 후 갱신 대기" : "읽기 전용"}
-                  </span>
-                </div>
-                <div className={dmStyles.translation}>{currentDmDraft.koreanText}</div>
-              </div>
-            </div>
+                    <div className={dmStyles.columns}>
+                      <div className={dmStyles.panel}>
+                        <div className={dmStyles.panelHead}>
+                          <strong>일본어 원문</strong>
+                          <div className={dmStyles.panelActions}>
+                            <button className="secondary" type="button" onClick={() => copyDmText(draft.japaneseText)}>복사</button>
+                            <button
+                              className="secondary"
+                              type="button"
+                              onClick={() => runDmPrepare([draft.handle])}
+                              disabled={draft.approved || dmRegeneratingHandle === draft.handle}
+                            >
+                              {dmRegeneratingHandle === draft.handle ? "생성 중…" : "다시 생성"}
+                            </button>
+                          </div>
+                        </div>
+                        <textarea
+                          className={dmStyles.textarea}
+                          value={draft.japaneseText}
+                          disabled={draft.approved}
+                          onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
+                          onBlur={() => translateDmDraft(draft.handle)}
+                        />
+                      </div>
 
-            <div className={dmStyles.footer}>
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => setDmIndex((current) => Math.max(0, current - 1))}
-                disabled={dmIndex === 0}
-              >
-                이전
-              </button>
-              <button
-                className={dmStyles.passButton}
-                type="button"
-                onClick={() => approveDmDraft(currentDmDraft.handle)}
-                disabled={currentDmDraft.approved || Boolean(dmApprovingHandle)}
-              >
-                {currentDmDraft.approved ? "통과 완료" : dmApprovingHandle === currentDmDraft.handle ? "처리 중…" : "통과"}
-              </button>
-              <button
-                className={`secondary ${dmStyles.footerNext}`}
-                type="button"
-                onClick={() => setDmIndex((current) => Math.min(dmDrafts.length - 1, current + 1))}
-                disabled={dmIndex >= dmDrafts.length - 1}
-              >
-                다음
-              </button>
+                      <div className={dmStyles.panel}>
+                        <div className={dmStyles.panelHead}>
+                          <strong>한국어 해석</strong>
+                          <span className={dmStyles.translationPending}>
+                            {dmTranslatingHandle === draft.handle ? "번역 갱신 중…" : draft.translationDirty ? "수정 후 갱신 대기" : "읽기 전용"}
+                          </span>
+                        </div>
+                        <div className={dmStyles.translation}>{draft.koreanText}</div>
+                      </div>
+                    </div>
+
+                    <div className={dmStyles.rowFooter}>
+                      <button
+                        className={dmStyles.passButton}
+                        type="button"
+                        onClick={() => approveDmDraft(draft.handle)}
+                        disabled={draft.approved || Boolean(dmApprovingHandle)}
+                      >
+                        {draft.approved ? "통과 완료" : dmApprovingHandle === draft.handle ? "처리 중…" : "통과"}
+                      </button>
+                    </div>
+                  </section>
+                ))}
+              </div>
             </div>
           </section>
         </div>
