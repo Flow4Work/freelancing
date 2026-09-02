@@ -89,6 +89,7 @@ export function DiscoveryConsole() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [automationWatchUntil, setAutomationWatchUntil] = useState<number | null>(null);
+  const [watchedAutomationJobId, setWatchedAutomationJobId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyItems, setHistoryItems] = useState<AutomationHistoryItem[]>([]);
@@ -133,17 +134,31 @@ export function DiscoveryConsole() {
     const timer = window.setInterval(async () => {
       if (Date.now() > automationWatchUntil) {
         setAutomationWatchUntil(null);
+        setWatchedAutomationJobId(null);
         return;
       }
       try {
-        await reloadCandidates(category);
-        if (historyOpen) await loadHistory();
+        const refreshedCandidates = await reloadCandidates(category);
+        const items = await fetchHistoryItems();
+        if (historyOpen) setHistoryItems(items);
+
+        const watched = watchedAutomationJobId
+          ? items.find((item) => item.id === watchedAutomationJobId)
+          : null;
+        if (watched && watched.status !== "pending") {
+          setWatchedAutomationJobId(null);
+          setAutomationWatchUntil(null);
+          setToast({
+            kind: watched.status === "failed" ? "error" : "success",
+            message: automationCompletionMessage(watched, refreshedCandidates),
+          });
+        }
       } catch {
         // 다음 주기에 다시 시도한다.
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [automationWatchUntil, category, historyOpen]);
+  }, [automationWatchUntil, category, historyOpen, watchedAutomationJobId]);
 
   useEffect(() => {
     if (!loading) return;
@@ -194,15 +209,20 @@ export function DiscoveryConsole() {
     const payload = await response.json() as CandidateListResponse & { error?: string };
     if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
     setCandidates(payload.candidates);
+    return payload.candidates;
+  }
+
+  async function fetchHistoryItems() {
+    const response = await fetch(`/api/automation/run?category=${category}`, { cache: "no-store" });
+    const payload = await response.json() as AutomationHistoryResponse;
+    if (!response.ok || !payload.ok) throw new Error(payload.error ?? "기록 조회 실패");
+    return payload.items ?? [];
   }
 
   async function loadHistory() {
     setHistoryLoading(true);
     try {
-      const response = await fetch(`/api/automation/run?category=${category}`, { cache: "no-store" });
-      const payload = await response.json() as AutomationHistoryResponse;
-      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "기록 조회 실패");
-      setHistoryItems(payload.items ?? []);
+      setHistoryItems(await fetchHistoryItems());
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "기록 조회 실패" });
     } finally {
@@ -261,6 +281,7 @@ export function DiscoveryConsole() {
       const payload = await response.json() as AutomationRunResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "OpenCode 자동 실행 실패");
 
+      setWatchedAutomationJobId(payload.jobId ?? null);
       setAutomationWatchUntil(Date.now() + AUTOMATION_WATCH_MS);
       setHistoryOpen(false);
       setExpandedHistoryId(null);
@@ -360,7 +381,10 @@ export function DiscoveryConsole() {
                             whiteSpace: "normal",
                           }}
                         >
-                          <span style={{ display: "block", color: item.status === "failed" ? "#dc2626" : "#333d4b", fontWeight: 800 }}>{historyTitle(item)}</span>
+                          <span style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+                            <span style={{ color: item.status === "failed" ? "#dc2626" : "#333d4b", fontWeight: 800 }}>{historyTitle(item)}</span>
+                            <span style={{ color: "#8b95a1", fontSize: 11, flex: "0 0 auto" }}>{historyTime(item)}</span>
+                          </span>
                           <span style={{ display: "block", marginTop: 3, color: "#6b7684", lineHeight: 1.45 }}>{historyResultLine(item)}</span>
                           {expanded && <HistoryDetail item={item} />}
                         </button>
@@ -554,12 +578,51 @@ function historyResultLine(item: AutomationHistoryItem) {
 }
 
 function historyTime(item: AutomationHistoryItem) {
-  return new Intl.DateTimeFormat("ko-KR", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(item.completedAt ?? item.failedAt ?? item.createdAt));
+  const value = item.status === "completed" ? item.completedAt : item.status === "failed" ? item.failedAt : null;
+  if (!value) return "";
+  const time = new Date(value);
+  const now = new Date();
+  const clock = `${pad2(time.getHours())}:${pad2(time.getMinutes())}`;
+  const today = time.getFullYear() === now.getFullYear()
+    && time.getMonth() === now.getMonth()
+    && time.getDate() === now.getDate();
+  return today ? clock : `${time.getMonth() + 1}/${time.getDate()} ${clock}`;
+}
+
+function automationCompletionMessage(item: AutomationHistoryItem, currentCandidates: DiscoveryCandidate[]) {
+  const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
+  if (item.status === "failed") return `${action} 실패 · ${item.failureMessage ?? "작업이 완료되지 않았습니다."}`;
+
+  if (item.mode === "instagram") {
+    const targetHandles = new Set(item.groups.flatMap((group) => group.handles));
+    let first = 0;
+    let second = 0;
+    let third = 0;
+    for (const candidate of currentCandidates) {
+      if (!targetHandles.has(candidate.handle) || candidate.verificationStatus !== "verified") continue;
+      const note = candidate.verificationNote ?? "";
+      if (note.startsWith("1순위")) first += 1;
+      else if (note.startsWith("2순위")) second += 1;
+      else if (note.startsWith("3순위")) third += 1;
+    }
+    const priorityParts = [
+      first ? `1순위 ${first}` : null,
+      second ? `2순위 ${second}` : null,
+      third ? `3순위 ${third}` : null,
+    ].filter(Boolean) as string[];
+    const otherParts = item.groups
+      .filter((group) => group.destination !== "최종 검증 완료")
+      .map((group) => `${group.destination} ${group.handles.length}`);
+    const details = [...priorityParts, ...otherParts].join(" / ");
+    return `최종 검증 ${item.candidateCount}명 완료${details ? ` · ${details}` : ""}`;
+  }
+
+  const details = item.groups.map((group) => `${group.destination} ${group.handles.length}`).join(" / ");
+  return `중복 확인 ${item.candidateCount}명 완료${details ? ` · ${details}` : ""}`;
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
 }
 
 function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
