@@ -24,7 +24,10 @@ export async function POST(request: Request) {
     }
 
     handle = parsed.data.handle.replace(/^@/, "").trim().toLowerCase();
-    const japaneseText = parsed.data.japaneseText.trim();
+    const japaneseText = parsed.data.japaneseText;
+    if (!japaneseText.trim()) {
+      return NextResponse.json({ ok: false, error: "일본어 DM 원문이 비어 있습니다." }, { status: 400 });
+    }
     const koreanText = await translateDmToKorean(japaneseText);
     const contact = await createApprovedDmContact({
       category: parsed.data.category,
