@@ -48,14 +48,9 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
       return "duplicate_passed";
     }
 
-    // 최종 검증 이후 생성된 DM만 DM 준비로 보낸다. 재검증이 더 최신이면 다시 생성해야 한다.
+    // DM 생성/승인/발송 이력은 후보 상태와 분리한다. 최종 검증 완료 후보는 DM을 준비해도 이 탭에 그대로 유지한다.
     if (candidate.verificationStatus === "verified" && candidate.candidateStatus === "qualified") {
-      const dmGeneratedAt = candidate.dmGeneratedAt ? Date.parse(candidate.dmGeneratedAt) : Number.NaN;
-      const verifiedAt = candidate.verifiedAt ? Date.parse(candidate.verifiedAt) : Number.NaN;
-      const dmIsCurrent = Boolean(candidate.dmText)
-        && Number.isFinite(dmGeneratedAt)
-        && (!Number.isFinite(verifiedAt) || dmGeneratedAt >= verifiedAt);
-      return dmIsCurrent ? "dm_ready" : "final_verification";
+      return "final_verification";
     }
 
     return "unmapped";
