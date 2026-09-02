@@ -12,6 +12,7 @@ export type DmContact = {
   koreanText: string;
   generatedAt: string;
   approvedAt: string;
+  approvalStatus: "approved";
   openCodeStatus: DmOpenCodeStatus;
   openCodeCompletedAt: string | null;
   openCodeError: string | null;
@@ -58,6 +59,7 @@ export async function createApprovedDmContact(input: {
       korean_text: koreanText,
       generated_at: generatedAt,
       approved_at: new Date().toISOString(),
+      approval_status: "approved",
       opencode_status: "pending",
     })
     .select(CONTACT_COLUMNS)
@@ -149,7 +151,7 @@ export async function markDmContactSent(id: string) {
   return mapContact(data);
 }
 
-const CONTACT_COLUMNS = "id, normalized_handle, category, japanese_text, korean_text, generated_at, approved_at, opencode_status, opencode_completed_at, opencode_error, sent_at";
+const CONTACT_COLUMNS = "id, normalized_handle, category, japanese_text, korean_text, generated_at, approved_at, approval_status, opencode_status, opencode_completed_at, opencode_error, sent_at";
 
 function mapContact(row: Record<string, unknown>): DmContact {
   const category = row.category === "food" ? "food" : "beauty";
@@ -161,6 +163,7 @@ function mapContact(row: Record<string, unknown>): DmContact {
     koreanText: String(row.korean_text ?? ""),
     generatedAt: String(row.generated_at),
     approvedAt: String(row.approved_at),
+    approvalStatus: "approved",
     openCodeStatus: normalizeOpenCodeStatus(row.opencode_status),
     openCodeCompletedAt: nullableString(row.opencode_completed_at),
     openCodeError: nullableString(row.opencode_error),
