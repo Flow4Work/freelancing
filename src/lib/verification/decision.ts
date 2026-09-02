@@ -1,12 +1,15 @@
 import type { DuplicateCheckStatus, SearchCategory } from "@/lib/discovery/types";
 import type { ReelMetrics } from "./metrics";
 
+export type FinalPriority = "1순위" | "2순위" | "3순위" | "제외";
+
 export type VerificationDecisionInput = {
   category: SearchCategory;
   duplicateStatus: DuplicateCheckStatus;
   exists: boolean | null;
   isPrivate: boolean | null;
   isPersonalCreator: boolean | null;
+  bio: string | null;
   followers: number | null;
   recentActivity: boolean | null;
   japaneseTarget: boolean | null;
@@ -20,11 +23,6 @@ export type VerificationDecision = {
   verificationStatus: "needs_instagram" | "verified" | "insufficient" | "private" | "rejected";
   reason: string;
 };
-
-// 현재 모집 프로젝트의 최소 공통선만 사용한다.
-const ABSOLUTE_LOW_FOLLOWER_REJECT = 500;
-const CURRENT_MIN_FOLLOWERS = 1000;
-const CURRENT_BEAUTY_MIN_REEL_AVERAGE = 1000;
 
 export function decideVerification(input: VerificationDecisionInput): VerificationDecision {
   if (input.duplicateStatus === "duplicate" || input.duplicateStatus === "protected") {
@@ -57,10 +55,6 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
     return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "최근 90일 활동 없음" };
   }
 
-  if (input.followers !== null && input.followers < ABSOLUTE_LOW_FOLLOWER_REJECT) {
-    return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "팔로워 규모가 현저히 부족" };
-  }
-
   const coreUnknown = input.exists === null
     || input.isPrivate === null
     || input.isPersonalCreator === null
@@ -74,19 +68,68 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
     return { discoveryStatus: "needs_review", verificationStatus: "insufficient", reason: "검증값 일부 확인 불가" };
   }
 
-  if (input.followers! < CURRENT_MIN_FOLLOWERS) {
-    return { discoveryStatus: "needs_review", verificationStatus: "verified", reason: "팔로워 1K 최소조건 미달" };
+  // Reels 조회수가 실제로 확보되지 않으면 낮은 성과로 추정하지 않고 재검증으로 남긴다.
+  if (input.reelMetrics.status !== "ready" || input.reelMetrics.average === null) {
+    return { discoveryStatus: "needs_review", verificationStatus: "insufficient", reason: "최근 Reels 조회수 검증 필요" };
   }
 
-  if (input.category === "beauty") {
-    if (input.reelMetrics.status !== "ready" || input.reelMetrics.average === null) {
-      return { discoveryStatus: "needs_review", verificationStatus: "insufficient", reason: "최근 Reels 조회수 검증 필요" };
-    }
+  const priority = classifyFinalPriority({
+    category: input.category,
+    followers: input.followers,
+    reelAverage: input.reelMetrics.average,
+    bio: input.bio,
+  });
 
-    if (input.reelMetrics.average < CURRENT_BEAUTY_MIN_REEL_AVERAGE) {
-      return { discoveryStatus: "needs_review", verificationStatus: "verified", reason: "최근 Reels 평균 1K 최소조건 미달" };
-    }
+  if (priority === "제외") {
+    const reason = input.followers < 1000
+      ? "제외 · 팔로워 1K 미만"
+      : "제외 · 최근 Reels 평균 1K 미만";
+    return { discoveryStatus: "hard_reject", verificationStatus: "verified", reason };
   }
 
-  return { discoveryStatus: "qualified", verificationStatus: "verified", reason: "현재 최소 모집조건 충족" };
+  return { discoveryStatus: "qualified", verificationStatus: "verified", reason: `${priority} · 최종 검증 완료` };
+}
+
+export function classifyFinalPriority(input: {
+  category: SearchCategory;
+  followers: number;
+  reelAverage: number;
+  bio: string | null;
+}): FinalPriority {
+  const { category, followers, reelAverage, bio } = input;
+
+  if (followers < 1000 || reelAverage < 1000) return "제외";
+
+  const firstPriority = (
+    followers >= 3000
+    && followers <= 7000
+    && reelAverage >= 3000
+  ) || (
+    category === "beauty"
+    && hasExplicitFemaleSignal(bio)
+    && followers >= 10000
+    && followers <= 20000
+    && reelAverage >= 10000
+  );
+  if (firstPriority) return "1순위";
+
+  if (followers >= 2000 && followers <= 10000 && reelAverage >= 2000) {
+    return "2순위";
+  }
+
+  if (
+    (followers >= 1000 && followers <= 3000 && reelAverage >= 1000)
+    || (followers >= 10000 && reelAverage >= 1000 && reelAverage < 10000)
+    || (category === "food" && followers >= 3000 && followers <= 7000 && reelAverage >= 1000 && reelAverage < 3000)
+  ) {
+    return "3순위";
+  }
+
+  // 4단계 분류가 빠지지 않도록, 제외 기준은 아니지만 1/2순위 조건에도 들지 않는 검증 완료 후보는 3순위로 둔다.
+  return "3순위";
+}
+
+function hasExplicitFemaleSignal(bio: string | null) {
+  if (!bio) return false;
+  return /(女性|女子|主婦|ママ|母|妻|여성|여자|주부|엄마|female|woman|mom|mother)/i.test(bio);
 }
