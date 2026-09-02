@@ -1,6 +1,6 @@
 import type { DiscoveryCandidate, DmProvider, SearchCategory } from "@/lib/discovery/types";
 
-export const GROQ_DM_MODEL = "qwen/qwen3.6-27b";
+export const GROQ_DM_MODEL = "qwen/qwen3.8-27b";
 export const SCALEWAY_DM_MODEL = "qwen3.6-35b-a3b";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -19,6 +19,7 @@ export type PreparedDm = {
   personalizationBasis: string;
   personalizationLine: string;
   dmText: string;
+  koreanText: string;
   provider: DmProvider;
   model: string;
   generatedAt: string;
@@ -27,12 +28,16 @@ export type PreparedDm = {
 export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise<PreparedDm> {
   const basis = selectPersonalizationBasis(candidate);
   const generated = await generatePersonalizationLine(basis);
+  const dmText = composeDm(candidate.category, generated.line);
+  const koreanText = await translateDmToKorean(dmText);
+
   return {
     handle: candidate.handle,
     personalizationSource: basis.source,
     personalizationBasis: basis.text,
     personalizationLine: generated.line,
-    dmText: composeDm(candidate.category, generated.line),
+    dmText,
+    koreanText,
     provider: generated.provider,
     model: generated.model,
     generatedAt: new Date().toISOString(),
@@ -70,6 +75,41 @@ export function selectPersonalizationBasis(candidate: DiscoveryCandidate): Perso
   scored.sort((a, b) => b.score - a.score);
   const best = scored[0];
   return { source: best.source, text: compact(best.text, 600) };
+}
+
+export async function translateDmToKorean(japaneseText: string) {
+  const cleanText = japaneseText.trim();
+  if (!cleanText) throw new Error("번역할 일본어 DM이 비어 있습니다.");
+  if (cleanText.length > 3000) throw new Error("일본어 DM이 너무 깁니다.");
+
+  const prompt = [
+    "다음 일본어 Instagram DM 전체 문장을 자연스러운 한국어 의미로 번역한다.",
+    "원문의 의미, 말투, 질문 여부를 그대로 유지하고 내용을 추가하거나 삭제하지 않는다.",
+    "설명, 주석, 따옴표, 일본어 원문 재출력 없이 한국어 번역문만 반환한다.",
+    "원문의 문단 구분은 가능한 한 유지한다.",
+    "일본어 원문:",
+    cleanText,
+  ].join("\n");
+
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  if (groqKey) {
+    try {
+      return await requestTranslation(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt);
+    } catch (error) {
+      console.warn("dm_translation_groq_failed", safeError(error));
+    }
+  }
+
+  const scalewayKey = process.env.SCW_SECRET_KEY?.trim();
+  if (scalewayKey) {
+    try {
+      return await requestTranslation(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt);
+    } catch (error) {
+      console.warn("dm_translation_scaleway_failed", safeError(error));
+    }
+  }
+
+  throw new Error("DM 한국어 번역에 실패했습니다. Groq/Scaleway 설정을 확인하세요.");
 }
 
 async function generatePersonalizationLine(basis: PersonalizationBasis): Promise<{ line: string; provider: DmProvider; model: string }> {
@@ -149,12 +189,49 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
   }
 }
 
+async function requestTranslation(url: string, apiKey: string, model: string, prompt: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        max_tokens: 700,
+        messages: [
+          { role: "system", content: "Translate the supplied Japanese DM into faithful, natural Korean. Return only the Korean translation." },
+          { role: "user", content: prompt },
+        ],
+      }),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      const detail = compact(await response.text(), 240);
+      throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+    return normalizeKoreanTranslation(payload.choices?.[0]?.message?.content);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function normalizeModelLine(value: string | null | undefined) {
   if (!value) throw new Error("empty_response");
   const line = value
     .replace(/^```(?:json|text)?/i, "")
     .replace(/```$/i, "")
-    .replace(/^["'「『]|["'」』]$/g, "")
+    .replace(/^[\"'「『]|[\"'」』]$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -164,11 +241,22 @@ function normalizeModelLine(value: string | null | undefined) {
   return line;
 }
 
+function normalizeKoreanTranslation(value: string | null | undefined) {
+  if (!value) throw new Error("empty_translation");
+  const text = value
+    .replace(/^```(?:text)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  if (!text || text.length > 3000) throw new Error("invalid_translation_length");
+  if (!/[가-힣]/u.test(text)) throw new Error("not_korean");
+  return text;
+}
+
 function composeDm(category: SearchCategory, personalizationLine: string) {
   const fixed = category === "beauty"
     ? [
-        "韓国のFixUpでは、美容に関するクリエイター向けPR企画をご案内しています。",
-        "韓国での美容系PR企画にもご興味はありますか？",
+        "韓国のFixUpでは、美容に関するクリエイター企画を行っています。",
+        "韓国での美容体験にもご興味はありますか？",
       ]
     : [
         "韓国のFixUpでは、グルメに関するクリエイター向けPR企画をご案内しています。",
