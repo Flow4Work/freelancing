@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCandidateViewState, getSearchStageViewState, type CandidateViewState } from "@/lib/discovery/presentation";
 import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
+import dmStyles from "./dm-workflow.module.css";
 
 type Health = {
   ok: boolean;
@@ -11,7 +12,7 @@ type Health = {
 };
 
 type Toast = { kind: "success" | "error"; message: string } | null;
-type StatusFilter = "all" | CandidateViewState;
+type StatusFilter = "all" | CandidateViewState | "send_confirmation";
 type AutomationMode = "duplicate" | "instagram";
 
 type AutomationRunResponse = {
@@ -22,11 +23,48 @@ type AutomationRunResponse = {
   error?: string;
 };
 
+type DmPreparedItem = {
+  handle: string;
+  japaneseText: string;
+  koreanText: string;
+  generatedAt: string;
+  provider: string;
+  model: string;
+};
+
+type DmDraft = DmPreparedItem & {
+  translationDirty: boolean;
+  approved: boolean;
+};
+
 type DmPrepareResponse = {
   ok: boolean;
   preparedCount?: number;
   providerCounts?: Record<string, number>;
   models?: string[];
+  items?: DmPreparedItem[];
+  error?: string;
+};
+
+type DmContact = {
+  id: string;
+  handle: string;
+  category: SearchCategory;
+  japaneseText: string;
+  koreanText: string;
+  generatedAt: string;
+  approvedAt: string;
+  openCodeStatus: "pending" | "success" | "failed";
+  openCodeCompletedAt: string | null;
+  openCodeError: string | null;
+  sentAt: string | null;
+};
+
+type DmContactsResponse = {
+  ok: boolean;
+  contacts?: DmContact[];
+  contact?: DmContact;
+  koreanText?: string;
   error?: string;
 };
 
@@ -84,6 +122,13 @@ export function DiscoveryConsole() {
   const [automationLoading, setAutomationLoading] = useState(false);
   const [dmLoading, setDmLoading] = useState(false);
   const [dmRegeneratingHandle, setDmRegeneratingHandle] = useState<string | null>(null);
+  const [dmTranslatingHandle, setDmTranslatingHandle] = useState<string | null>(null);
+  const [dmApprovingHandle, setDmApprovingHandle] = useState<string | null>(null);
+  const [dmDrafts, setDmDrafts] = useState<DmDraft[]>([]);
+  const [dmModalOpen, setDmModalOpen] = useState(false);
+  const [dmIndex, setDmIndex] = useState(0);
+  const [dmContacts, setDmContacts] = useState<DmContact[]>([]);
+  const [dmContactsLoading, setDmContactsLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +154,9 @@ export function DiscoveryConsole() {
     setHistoryOpen(false);
     setHistoryItems([]);
     setExpandedHistoryId(null);
+    setDmDrafts([]);
+    setDmModalOpen(false);
+    setDmIndex(0);
 
     fetch(`/api/candidates?category=${category}`, { cache: "no-store" })
       .then(async (response) => {
@@ -126,8 +174,35 @@ export function DiscoveryConsole() {
         if (!cancelled) setListLoading(false);
       });
 
+    setDmContactsLoading(true);
+    fetch(`/api/dm/contacts?category=${category}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as DmContactsResponse;
+        if (!response.ok || !payload.ok) throw new Error(payload.error ?? "발송 확인 목록을 불러오지 못했습니다.");
+        if (!cancelled) setDmContacts(payload.contacts ?? []);
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setDmContacts([]);
+          setToast({ kind: "error", message: caught instanceof Error ? caught.message : "발송 확인 목록 조회 실패" });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDmContactsLoading(false);
+      });
+
     return () => { cancelled = true; };
   }, [category]);
+
+  useEffect(() => {
+    if (!dmContacts.some((contact) => contact.openCodeStatus === "pending")) return;
+    const timer = window.setInterval(() => {
+      reloadDmContacts(category).catch(() => {
+        // 다음 주기에 다시 시도한다.
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [category, dmContacts]);
 
   useEffect(() => {
     if (!automationWatchUntil) return;
@@ -185,6 +260,7 @@ export function DiscoveryConsole() {
   );
 
   const filteredCandidates = useMemo(() => {
+    if (statusFilter === "send_confirmation") return [];
     if (statusFilter === "all") return visibleCandidates;
     return visibleCandidates.filter((candidate) => candidateState(candidate) === statusFilter);
   }, [visibleCandidates, statusFilter]);
@@ -193,7 +269,7 @@ export function DiscoveryConsole() {
   const recommendedTotal = candidates.filter((candidate) => candidateState(candidate) === "recommended").length;
   const duplicatePassedTotal = candidates.filter((candidate) => candidateState(candidate) === "duplicate_passed").length;
   const finalVerificationTotal = candidates.filter((candidate) => candidateState(candidate) === "final_verification").length;
-  const dmReadyTotal = candidates.filter((candidate) => candidateState(candidate) === "dm_ready").length;
+  const sendReadyContacts = dmContacts.filter((contact) => contact.openCodeStatus === "success" && !contact.sentAt);
   const excludedTotal = candidates.length - visibleCandidates.length;
 
   const action = statusFilter === "verification_needed" || statusFilter === "recommended"
@@ -201,7 +277,7 @@ export function DiscoveryConsole() {
     : statusFilter === "duplicate_passed"
       ? { mode: "instagram" as const, label: "최종 검증 실행" }
       : statusFilter === "final_verification"
-        ? { mode: "dm" as const, label: "DM 준비 생성" }
+        ? { mode: "dm" as const, label: "DM 준비" }
         : null;
 
   async function reloadCandidates(targetCategory: SearchCategory) {
@@ -210,6 +286,15 @@ export function DiscoveryConsole() {
     if (!response.ok) throw new Error(payload.error ?? "누적 후보를 불러오지 못했습니다.");
     setCandidates(payload.candidates);
     return payload.candidates;
+  }
+
+  async function reloadDmContacts(targetCategory: SearchCategory) {
+    const response = await fetch(`/api/dm/contacts?category=${targetCategory}`, { cache: "no-store" });
+    const payload = await response.json() as DmContactsResponse;
+    if (!response.ok || !payload.ok) throw new Error(payload.error ?? "발송 확인 목록 조회 실패");
+    const contacts = payload.contacts ?? [];
+    setDmContacts(contacts);
+    return contacts;
   }
 
   async function fetchHistoryItems() {
@@ -316,9 +401,22 @@ export function DiscoveryConsole() {
       });
       const payload = await response.json() as DmPrepareResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "DM 준비 실패");
+      const items = payload.items ?? [];
+      if (!items.length) throw new Error("생성된 DM 초안을 받지 못했습니다.");
 
-      await reloadCandidates(category);
-      if (!singleHandle) setStatusFilter("dm_ready");
+      if (singleHandle) {
+        const replacement = items[0];
+        setDmDrafts((current) => current.map((draft) => (
+          draft.handle === singleHandle
+            ? { ...replacement, translationDirty: false, approved: false }
+            : draft
+        )));
+      } else {
+        setDmDrafts(items.map((item) => ({ ...item, translationDirty: false, approved: false })));
+        setDmIndex(0);
+        setDmModalOpen(true);
+      }
+
       const counts = payload.providerCounts ?? {};
       const details = [
         counts.groq ? `Groq ${counts.groq}` : null,
@@ -327,7 +425,7 @@ export function DiscoveryConsole() {
       ].filter(Boolean).join(" · ");
       setToast({
         kind: "success",
-        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `DM 준비 ${payload.preparedCount ?? handles.length}명 완료`}${details ? ` · ${details}` : ""}`,
+        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `DM 준비 ${payload.preparedCount ?? items.length}명 완료`}${details ? ` · ${details}` : ""}`,
       });
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 준비 실패" });
@@ -336,6 +434,108 @@ export function DiscoveryConsole() {
       setDmRegeneratingHandle(null);
     }
   }
+
+  function updateDmJapanese(handle: string, japaneseText: string) {
+    setDmDrafts((current) => current.map((draft) => (
+      draft.handle === handle
+        ? { ...draft, japaneseText, translationDirty: true }
+        : draft
+    )));
+  }
+
+  async function translateDmDraft(handle: string) {
+    const draft = dmDrafts.find((item) => item.handle === handle);
+    if (!draft || !draft.translationDirty || draft.approved || dmTranslatingHandle === handle) return;
+    const japaneseText = draft.japaneseText.trim();
+    if (!japaneseText) return;
+
+    setDmTranslatingHandle(handle);
+    try {
+      const response = await fetch("/api/dm/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ japaneseText }),
+      });
+      const payload = await response.json() as DmContactsResponse;
+      if (!response.ok || !payload.ok || !payload.koreanText) throw new Error(payload.error ?? "한국어 번역 갱신 실패");
+      setDmDrafts((current) => current.map((item) => (
+        item.handle === handle && item.japaneseText.trim() === japaneseText
+          ? { ...item, koreanText: payload.koreanText!, translationDirty: false }
+          : item
+      )));
+    } catch (caught) {
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "한국어 번역 갱신 실패" });
+    } finally {
+      setDmTranslatingHandle(null);
+    }
+  }
+
+  async function copyDmText(japaneseText: string) {
+    try {
+      await navigator.clipboard.writeText(japaneseText);
+      setToast({ kind: "success", message: "복사 완료" });
+    } catch {
+      setToast({ kind: "error", message: "클립보드 복사에 실패했습니다." });
+    }
+  }
+
+  async function approveDmDraft(handle: string) {
+    const draft = dmDrafts.find((item) => item.handle === handle);
+    if (!draft || draft.approved || dmApprovingHandle) return;
+    const japaneseText = draft.japaneseText.trim();
+    if (!japaneseText) {
+      setToast({ kind: "error", message: "일본어 DM 원문이 비어 있습니다." });
+      return;
+    }
+
+    setDmApprovingHandle(handle);
+    setToast(null);
+    try {
+      const response = await fetch("/api/dm/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, handle, japaneseText }),
+      });
+      const payload = await response.json() as DmContactsResponse;
+      if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? "DM 통과 처리 실패");
+
+      setDmDrafts((current) => current.map((item) => (
+        item.handle === handle
+          ? {
+              ...item,
+              japaneseText: payload.contact!.japaneseText,
+              koreanText: payload.contact!.koreanText,
+              translationDirty: false,
+              approved: true,
+            }
+          : item
+      )));
+      await reloadDmContacts(category);
+      setToast({ kind: "success", message: "OpenCode가 작업을 시작합니다." });
+    } catch (caught) {
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 통과 처리 실패" });
+    } finally {
+      setDmApprovingHandle(null);
+    }
+  }
+
+  async function markDmSent(id: string) {
+    try {
+      const response = await fetch("/api/dm/contacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const payload = await response.json() as DmContactsResponse;
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "발송 완료 저장 실패");
+      await reloadDmContacts(category);
+      setToast({ kind: "success", message: "발송 완료로 기록했습니다." });
+    } catch (caught) {
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "발송 완료 저장 실패" });
+    }
+  }
+
+  const currentDmDraft = dmDrafts[dmIndex] ?? null;
 
   return (
     <>
@@ -415,7 +615,7 @@ export function DiscoveryConsole() {
         <div className="results-head">
           <div className="results-summary">
             <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 제외 ${excludedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · DM 준비 ${dmReadyTotal}`}</span>
+            <span>{listLoading ? "불러오는 중…" : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 제외 ${excludedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · 발송 확인 ${sendReadyContacts.length}`}</span>
           </div>
           <div className="results-actions">
             <div className="mini-segment" aria-label="상태 필터">
@@ -425,12 +625,12 @@ export function DiscoveryConsole() {
               <span className="filter-separator" style={{ margin: "0 9.6px" }} aria-hidden="true">ㅣ</span>
               <button className={statusFilter === "duplicate_passed" ? "active" : ""} onClick={() => setStatusFilter("duplicate_passed")}>중복 통과</button>
               <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증 완료</button>
-              <button className={statusFilter === "dm_ready" ? "active" : ""} onClick={() => setStatusFilter("dm_ready")}>DM 준비</button>
+              <button className={statusFilter === "send_confirmation" ? "active" : ""} onClick={() => setStatusFilter("send_confirmation")}>발송 확인</button>
             </div>
             <div style={{ width: ACTION_SLOT_WIDTH, flex: `0 0 ${ACTION_SLOT_WIDTH}px` }}>
               {action && (
                 <button
-                  className="secondary action-button"
+                  className={`secondary action-button ${action.mode === "dm" ? dmStyles.dmActionButton : ""}`}
                   style={{
                     width: "100%",
                     whiteSpace: "nowrap",
@@ -445,16 +645,92 @@ export function DiscoveryConsole() {
             </div>
           </div>
         </div>
-        {filteredCandidates.length ? (
-          <CandidateTable
-            candidates={filteredCandidates}
-            getState={candidateState}
-            dmView={statusFilter === "dm_ready"}
-            onRegenerate={(handle) => runDmPrepare([handle])}
-            regeneratingHandle={dmRegeneratingHandle}
-          />
+
+        {statusFilter === "send_confirmation" ? (
+          <SendConfirmationTable contacts={sendReadyContacts} loading={dmContactsLoading} onSent={markDmSent} />
+        ) : filteredCandidates.length ? (
+          <CandidateTable candidates={filteredCandidates} getState={candidateState} />
         ) : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
+
+      {dmModalOpen && currentDmDraft && (
+        <div className={dmStyles.backdrop} role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setDmModalOpen(false);
+        }}>
+          <section className={dmStyles.modal} role="dialog" aria-modal="true" aria-label={`@${currentDmDraft.handle} DM 준비`}>
+            <div className={dmStyles.modalHead}>
+              <div className={dmStyles.modalTitle}>
+                <strong>@{currentDmDraft.handle}</strong>
+                <span>{dmIndex + 1} / {dmDrafts.length}</span>
+              </div>
+              <button className={dmStyles.closeButton} type="button" aria-label="닫기" onClick={() => setDmModalOpen(false)}>×</button>
+            </div>
+
+            <div className={dmStyles.columns}>
+              <div className={dmStyles.panel}>
+                <div className={dmStyles.panelHead}>
+                  <strong>일본어 원문</strong>
+                  <div className={dmStyles.panelActions}>
+                    <button className="secondary" type="button" onClick={() => copyDmText(currentDmDraft.japaneseText)}>복사</button>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() => runDmPrepare([currentDmDraft.handle])}
+                      disabled={currentDmDraft.approved || dmRegeneratingHandle === currentDmDraft.handle}
+                    >
+                      {dmRegeneratingHandle === currentDmDraft.handle ? "생성 중…" : "다시 생성"}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className={dmStyles.textarea}
+                  value={currentDmDraft.japaneseText}
+                  disabled={currentDmDraft.approved}
+                  onChange={(event) => updateDmJapanese(currentDmDraft.handle, event.target.value)}
+                  onBlur={() => translateDmDraft(currentDmDraft.handle)}
+                />
+              </div>
+
+              <div className={dmStyles.panel}>
+                <div className={dmStyles.panelHead}>
+                  <strong>한국어 해석</strong>
+                  <span className={dmStyles.translationPending}>
+                    {dmTranslatingHandle === currentDmDraft.handle ? "번역 갱신 중…" : currentDmDraft.translationDirty ? "수정 후 갱신 대기" : "읽기 전용"}
+                  </span>
+                </div>
+                <div className={dmStyles.translation}>{currentDmDraft.koreanText}</div>
+              </div>
+            </div>
+
+            <div className={dmStyles.footer}>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setDmIndex((current) => Math.max(0, current - 1))}
+                disabled={dmIndex === 0}
+              >
+                이전
+              </button>
+              <button
+                className={dmStyles.passButton}
+                type="button"
+                onClick={() => approveDmDraft(currentDmDraft.handle)}
+                disabled={currentDmDraft.approved || Boolean(dmApprovingHandle)}
+              >
+                {currentDmDraft.approved ? "통과 완료" : dmApprovingHandle === currentDmDraft.handle ? "처리 중…" : "통과"}
+              </button>
+              <button
+                className={`secondary ${dmStyles.footerNext}`}
+                type="button"
+                onClick={() => setDmIndex((current) => Math.min(dmDrafts.length - 1, current + 1))}
+                disabled={dmIndex >= dmDrafts.length - 1}
+              >
+                다음
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {toast && <div className={`toast ${toast.kind}`}>{toast.message}</div>}
     </>
@@ -464,54 +740,10 @@ export function DiscoveryConsole() {
 function CandidateTable({
   candidates,
   getState,
-  dmView,
-  onRegenerate,
-  regeneratingHandle,
 }: {
   candidates: DiscoveryCandidate[];
   getState: (candidate: DiscoveryCandidate) => CandidateViewState;
-  dmView: boolean;
-  onRegenerate: (handle: string) => void;
-  regeneratingHandle: string | null;
 }) {
-  if (dmView) {
-    return (
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th style={{ width: 170 }}>Instagram</th><th style={{ width: "30%" }}>개인화 근거</th><th>일본어 DM</th><th style={{ width: 100 }}>생성</th></tr></thead>
-          <tbody>
-            {candidates.map((candidate) => (
-              <tr key={candidate.handle}>
-                <td>
-                  <div className="handle">@{candidate.handle}</div>
-                  <a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a>
-                </td>
-                <td>
-                  <div style={{ fontWeight: 700, marginBottom: 5 }}>{candidate.dmPersonalizationSource ?? "기존 검증 정보"}</div>
-                  <div style={{ color: "#6b7684", lineHeight: 1.55, whiteSpace: "normal" }}>{candidate.dmPersonalizationBasis ?? "-"}</div>
-                </td>
-                <td>
-                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>{candidate.dmText ?? "-"}</div>
-                  <div style={{ marginTop: 7, color: "#8b95a1", fontSize: 11 }}>{dmProviderLabel(candidate)}</div>
-                </td>
-                <td>
-                  <button
-                    className="secondary"
-                    style={{ whiteSpace: "nowrap", padding: "8px 10px" }}
-                    onClick={() => onRegenerate(candidate.handle)}
-                    disabled={regeneratingHandle === candidate.handle}
-                  >
-                    {regeneratingHandle === candidate.handle ? "생성 중…" : "다시 생성"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
   return (
     <div className="table-wrap">
       <table>
@@ -531,6 +763,40 @@ function CandidateTable({
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SendConfirmationTable({
+  contacts,
+  loading,
+  onSent,
+}: {
+  contacts: DmContact[];
+  loading: boolean;
+  onSent: (id: string) => void;
+}) {
+  if (loading) return <div className="empty">발송 확인 목록을 불러오는 중입니다.</div>;
+  if (!contacts.length) return <div className="empty">현재 발송 대기 중인 DM이 없습니다.</div>;
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead><tr><th style={{ width: 170 }}>Instagram</th><th>일본어 원문</th><th style={{ width: 110 }}>상태</th><th style={{ width: 120 }}>확인</th></tr></thead>
+        <tbody>
+          {contacts.map((contact) => (
+            <tr key={contact.id}>
+              <td>
+                <div className="handle">@{contact.handle}</div>
+                <a className="link" href={`https://www.instagram.com/${contact.handle}/`} target="_blank" rel="noreferrer">프로필 열기 ↗</a>
+              </td>
+              <td><div className={dmStyles.sendText}>{contact.japaneseText}</div></td>
+              <td><span className={dmStyles.sendStatus}>발송 대기</span></td>
+              <td><button className="secondary" type="button" onClick={() => onSent(contact.id)}>발송 완료</button></td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -731,11 +997,4 @@ function verificationLabel(candidate: DiscoveryCandidate) {
   if (candidate.verificationStatus === "verified") return "검증 완료";
   if (candidate.verificationStatus === "insufficient") return "일부 확인불가";
   return "실측 대기";
-}
-
-function dmProviderLabel(candidate: DiscoveryCandidate) {
-  if (candidate.dmProvider === "groq") return `Groq · ${candidate.dmModel ?? "-"}`;
-  if (candidate.dmProvider === "scaleway") return `Scaleway · ${candidate.dmModel ?? "-"}`;
-  if (candidate.dmProvider === "fallback") return "고정 fallback · LLM 실패 시 안전 문구";
-  return candidate.dmModel ?? "-";
 }
