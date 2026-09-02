@@ -12,15 +12,19 @@ type Group = {
 type Item = {
   id: string;
   mode: "duplicate" | "instagram";
-  status: "pending" | "completed";
+  status: "pending" | "completed" | "failed";
   candidateCount: number;
+  processedCount: number;
   createdAt: string;
   completedAt: string | null;
+  failedAt: string | null;
+  failureMessage: string | null;
   groups: Group[];
   exactSnapshot: boolean;
 };
 
 const COMPLETED_ORANGE = "#f59e0b";
+const FAILED_RED = "#dc2626";
 
 export function AutomationHistory({ category }: { category: SearchCategory }) {
   const [open, setOpen] = useState(false);
@@ -100,7 +104,8 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
             items.map((item) => {
               const expanded = expandedId === item.id;
               const completed = item.status === "completed";
-              const recordColor = completed ? COMPLETED_ORANGE : "#333d4b";
+              const failed = item.status === "failed";
+              const recordColor = completed ? COMPLETED_ORANGE : failed ? FAILED_RED : "#333d4b";
               return (
                 <button
                   key={item.id}
@@ -123,13 +128,13 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
                 >
                   <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <span style={{ color: recordColor, fontWeight: 800 }}>{title(item)}</span>
-                    {completed && (
-                      <span style={{ flex: "0 0 auto", color: COMPLETED_ORANGE, fontSize: 11, fontWeight: 400 }}>
-                        {completedTime(item)}
+                    {item.status !== "pending" && (
+                      <span style={{ flex: "0 0 auto", color: recordColor, fontSize: 11, fontWeight: 400 }}>
+                        {terminalTime(item)}
                       </span>
                     )}
                   </span>
-                  <span style={{ display: "block", marginTop: 3, color: completed ? COMPLETED_ORANGE : "#6b7684", lineHeight: 1.45 }}>
+                  <span style={{ display: "block", marginTop: 3, color: failed ? FAILED_RED : completed ? COMPLETED_ORANGE : "#6b7684", lineHeight: 1.45 }}>
                     {resultLine(item)}
                   </span>
                   {expanded && <Detail item={item} />}
@@ -147,11 +152,16 @@ export function AutomationHistory({ category }: { category: SearchCategory }) {
 
 function title(item: Item) {
   const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
-  return `${action} ${item.candidateCount}명${item.status === "pending" ? " 진행 중" : " 완료"}`;
+  if (item.status === "pending") return `${action} ${item.processedCount}/${item.candidateCount} 진행 중`;
+  if (item.status === "failed") return `${action} ${item.processedCount}/${item.candidateCount} 실패`;
+  return `${action} ${item.candidateCount}명 완료`;
 }
 
 function resultLine(item: Item) {
-  if (item.status === "pending") return "결과를 기다리는 중입니다.";
+  if (item.status === "pending") {
+    return item.processedCount > 0 ? `현재 ${item.processedCount}명 결과 저장 완료` : "첫 결과를 기다리는 중입니다.";
+  }
+  if (item.status === "failed") return item.failureMessage ?? "작업이 완료 전에 중단되었습니다.";
   if (!item.groups.length) return "처리 결과가 없습니다.";
   return item.groups.map((group) => `${group.destination} ${group.handles.length}`).join(" · ");
 }
@@ -161,9 +171,14 @@ function Detail({ item }: { item: Item }) {
   return (
     <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2" }}>
       <span style={{ display: "block", marginBottom: 7, color: "#6b7684", fontSize: 11 }}>
-        {time(item)} · 처리 {item.candidateCount}명
+        {time(item)} · 저장 {item.processedCount}/{item.candidateCount}명
       </span>
-      {!item.exactSnapshot && (
+      {item.status === "failed" && item.failureMessage && (
+        <span style={{ display: "block", marginBottom: 7, color: FAILED_RED, lineHeight: 1.45 }}>
+          {item.failureMessage}
+        </span>
+      )}
+      {!item.exactSnapshot && item.status === "completed" && (
         <span style={{ display: "block", marginBottom: 7, color: "#8b95a1", fontSize: 11 }}>
           이전 실행 기록 · 현재 저장 상태 기준
         </span>
@@ -185,12 +200,12 @@ function Detail({ item }: { item: Item }) {
   );
 }
 
-function completedTime(item: Item) {
+function terminalTime(item: Item) {
   return new Intl.DateTimeFormat("ko-KR", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(item.completedAt ?? item.createdAt));
+  }).format(new Date(item.completedAt ?? item.failedAt ?? item.createdAt));
 }
 
 function time(item: Item) {
@@ -199,5 +214,5 @@ function time(item: Item) {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(item.completedAt ?? item.createdAt));
+  }).format(new Date(item.completedAt ?? item.failedAt ?? item.createdAt));
 }
