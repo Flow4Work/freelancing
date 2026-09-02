@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
 import { launchOpenCodeDmInput } from "@/lib/automation/opencode-dm-launcher";
-import { translateDmToKorean } from "@/lib/dm/prepare";
 import { createApprovedDmContact, recordDmOpenCodeResult } from "@/lib/supabase/dm-contacts";
 
 export const runtime = "nodejs";
@@ -11,6 +10,7 @@ const bodySchema = z.object({
   category: z.enum(["beauty", "food"]),
   handle: z.string().min(1).max(80),
   japaneseText: z.string().min(1).max(3000),
+  koreanText: z.string().min(1).max(3000),
 });
 
 export async function POST(request: Request) {
@@ -25,10 +25,14 @@ export async function POST(request: Request) {
 
     handle = parsed.data.handle.replace(/^@/, "").trim().toLowerCase();
     const japaneseText = parsed.data.japaneseText;
+    const koreanText = parsed.data.koreanText;
     if (!japaneseText.trim()) {
       return NextResponse.json({ ok: false, error: "일본어 DM 원문이 비어 있습니다." }, { status: 400 });
     }
-    const koreanText = await translateDmToKorean(japaneseText);
+    if (!koreanText.trim()) {
+      return NextResponse.json({ ok: false, error: "한국어 DM 해석이 비어 있습니다." }, { status: 400 });
+    }
+
     const contact = await createApprovedDmContact({
       category: parsed.data.category,
       handle,
