@@ -11,10 +11,8 @@ const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 65_000;
 
 const INTERNAL_EVIDENCE_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|followers?|following|平均|평균|\b8\s*\/\s*8\b|\b\d+건\b|순위|順位|verified|qualified|검증|検証|모집조건|条件\s*(?:충족|通過)?|중복|重複|후보|候補|판정|判定|공개.?개인|개인\s*계정|최근\s*게시일|null|log\s*in|sign\s*up|photo\s*by|video\s*by|show\s*more|highlight\s*story|read\s*more)/i;
-const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|フォロワ|followers?|平均|평균|8\s*\/\s*8|8件|順位|verified|qualified|検証|검증|条件|모집조건|重複|중복|候補|후보|判定|판정|経歴を拝見|姿を拝見|点に惹かれ|日韓夫婦美容室)/i;
-const BEAUTY_RELEVANT_PATTERN = /(?:美容|コスメ|スキン|肌|メイク|皮膚|ヘア|美容師|サロン|beauty|cosme|cosmetic|skincare|skin|makeup|hair|미용|뷰티|코스메|화장|피부|메이크|헤어)/i;
-const KOREA_RELEVANT_PATTERN = /(?:韓国|渡韓|在韓|日韓|ソウル|釜山|korea|seoul|busan|한국|방한|재한|한일|서울|부산)/i;
-const BEAUTY_IRRELEVANT_PATTERN = /(?:カフェ|植物|編み物|グルメ|料理|食事|コーヒー|ファッション|コーデ|cafe|coffee|plant|knit|food|fashion|카페|식물|뜨개|맛집|음식|패션|코디)/i;
+const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|フォロワ|followers?|平均|평균|8\s*\/\s*8|8件|順位|verified|qualified|検証|검증|条件|모집조건|重複|중복|候補|후보|判定|판정)/i;
+const FORBIDDEN_PERSONALIZATION_PATTERN = /(?:経歴を拝見|姿を拝見|日韓夫婦美容室|惹かれ|関心が近いと感じ|関心が近い|魅力を感じ|興味を持ち)/i;
 
 type PersonalizationBasis = {
   source: string;
@@ -30,6 +28,7 @@ type LineValidationCode =
   | "multiple_sentences"
   | "explanatory_output"
   | "unsafe_internal_reference"
+  | "unsafe_personalization_expression"
   | "generic_fallback_with_evidence";
 
 type PersonalizationFailureKind =
@@ -79,7 +78,7 @@ export type PreparedDm = {
 
 export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise<PreparedDm> {
   const basis = selectPersonalizationBasis(candidate);
-  const generated = await generatePersonalizationLine(candidate.handle, candidate.category, basis);
+  const generated = await generatePersonalizationLine(candidate.handle, basis);
   const dmText = composeDm(candidate.category, generated.line, candidate.handle);
   const koreanText = await translateDmToKorean(dmText);
 
@@ -98,38 +97,37 @@ export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise
 
 export function selectPersonalizationBasis(candidate: DiscoveryCandidate): PersonalizationBasis {
   const rawOptions = [
-    candidate.bio ? { source: "BIO", text: candidate.bio, base: 90 } : null,
-    candidate.evidenceText ? { source: "기존 확인 근거", text: candidate.evidenceText, base: 74 } : null,
-    candidate.verificationNote ? { source: "최종 검증 메모", text: candidate.verificationNote, base: 70 } : null,
+    candidate.bio ? { source: "BIO", text: candidate.bio, base: 100 } : null,
+    candidate.evidenceText ? { source: "기존 확인 근거", text: candidate.evidenceText, base: 76 } : null,
+    candidate.verificationNote ? { source: "최종 검증 메모", text: candidate.verificationNote, base: 66 } : null,
     candidate.targetSignals.length || candidate.koreaSignals.length
-      ? { source: "구조화 신호", text: [...candidate.targetSignals, ...candidate.koreaSignals].join(" · "), base: 48 }
+      ? { source: "구조화 신호", text: [...candidate.targetSignals, ...candidate.koreaSignals].join(" · "), base: 52 }
       : null,
   ].filter((item): item is { source: string; text: string; base: number } => Boolean(item));
 
   const options = rawOptions
-    .map((item) => ({ ...item, text: sanitizePersonalizationEvidence(item.text, candidate.category) }))
+    .map((item) => ({ ...item, text: sanitizePersonalizationEvidence(item.text) }))
     .filter((item) => Boolean(item.text));
 
   if (!options.length) {
     return { source: "일반", text: "확인된 개인화 근거 없음" };
   }
 
-  const categoryTerms = candidate.category === "beauty"
-    ? ["美容", "コスメ", "スキン", "beauty", "cosmetic", "skincare", "미용", "뷰티", "화장", "피부"]
-    : ["グルメ", "カフェ", "食", "food", "restaurant", "맛집", "카페", "음식"];
-  const koreaTerms = ["韓国", "ソウル", "釜山", "korea", "seoul", "busan", "한국", "서울", "부산", "渡韓"];
+  const koreaTerms = ["韓国", "渡韓", "在韓", "日韓", "ソウル", "釜山", "korea", "seoul", "busan", "한국", "방한", "재한", "한일", "서울", "부산"];
+  const roleTerms = ["CEO", "美容師", "皮膚科", "皮膚管理士", "研究家", "オーナー", "コンシェルジュ", "代表", "勤務", "운영", "근무", "연구가"];
 
   const scored = options.map((item) => {
     const normalized = item.text.toLowerCase();
-    const categoryHits = Math.min(2, categoryTerms.filter((term) => normalized.includes(term.toLowerCase())).length);
     const koreaHits = Math.min(2, koreaTerms.filter((term) => normalized.includes(term.toLowerCase())).length);
-    const detailBonus = Math.min(5, Math.floor(item.text.length / 100));
-    return { ...item, score: item.base + categoryHits * 5 + koreaHits * 4 + detailBonus };
+    const roleHits = Math.min(2, roleTerms.filter((term) => normalized.includes(term.toLowerCase())).length);
+    const detailBonus = Math.min(5, Math.floor(item.text.length / 120));
+    const tinyGenericPenalty = item.text.length < 12 ? 18 : 0;
+    return { ...item, score: item.base + koreaHits * 3 + roleHits * 3 + detailBonus - tinyGenericPenalty };
   });
 
   scored.sort((a, b) => b.score - a.score);
   const best = scored[0];
-  return { source: best.source, text: compact(best.text, 600) };
+  return { source: best.source, text: compact(best.text, 700) };
 }
 
 export async function translateDmToKorean(japaneseText: string) {
@@ -169,7 +167,6 @@ export async function translateDmToKorean(japaneseText: string) {
 
 async function generatePersonalizationLine(
   handle: string,
-  category: SearchCategory,
   basis: PersonalizationBasis,
 ): Promise<{ line: string; provider: DmProvider; model: string }> {
   if (basis.source === "일반") {
@@ -177,25 +174,25 @@ async function generatePersonalizationLine(
   }
 
   const styleHint = personalizationStyleHint(handle);
-  const relevanceRule = category === "beauty"
-    ? "미용 PR과 직접 관계없는 카페, 식물, 뜨개질, 음식, 패션 단독 정보는 사용하지 않는다. 미용/스킨케어/코스메 또는 한국과의 명확한 접점 중 가장 강한 사실을 우선한다."
-    : "이번 PR 장르와 직접 관계없는 정보는 사용하지 않는다.";
   const prompt = [
     "다음 확인된 공개 프로필/콘텐츠 근거만 사용해 Instagram 첫 DM의 개인화 부분을 자연스러운 일본어 1문장으로 작성한다.",
-    "상대에게 직접 말해도 자연스러운 사실만 사용한다. 내부 운영 정보나 평가 정보는 절대 사용하지 않는다.",
+    "가장 중요한 우선순위는 사실 정확성이다. 제안 장르와의 관련성보다 원본 근거에 실제로 적힌 사실을 정확하게 표현하는 것이 우선이다.",
+    "개인화와 뒤에 이어질 PR 제안 장르는 완전히 분리한다. 미용 PR을 제안한다고 해서 개인화 문장을 미용 내용으로 맞추거나 바꾸지 않는다.",
+    "원본 근거의 의미나 분야를 다른 분야로 변환하지 않는다. 예: コーデ를肌管理로 바꾸거나, 일반적인韓国発信을美容発信으로 바꾸지 않는다.",
+    "근거에 없는 관심, 호감, 공감, 전문성, 평가를 추가하지 않는다. 『関心が近いと感じて』『惹かれ』『魅力を感じて』 같은 우리 측 감정 표현을 쓰지 않는다.",
     "Reels/리일/재생수/조회수/팔로워/평균/표본 수/순위/검증 상태/조건 충족/중복 확인/후보 상태/내부 판정은 입력에 있더라도 절대 언급하지 않는다.",
-    relevanceRule,
-    "확인되지 않은 게시물, 직업, 경력, 거주지, 방문 횟수, 취미, 관심사, 성과를 추가하거나 추측하지 않는다.",
-    "BIO 문구를 그대로 이어 붙이지 말고 일본인이 실제 첫 DM에서 쓸 자연스러운 표현으로 다시 쓴다.",
-    "가장 강한 특징 1개만 우선 사용하고, 정말 자연스럽게 연결될 때만 2개까지 사용한다. 정보를 나열하지 않는다.",
-    "『経歴を拝見し』『姿を拝見し』『〜点に惹かれ』『日韓夫婦美容室』처럼 인위적이거나 한국어식 명사 결합은 쓰지 않는다.",
+    "상대의 가장 강하고 구체적인 사실 1개를 우선 사용한다. 정말 자연스럽게 연결되는 경우에만 2개까지 사용한다.",
+    "월별 한국 방문, 장기간의 한국 관련 활동, 실제 직업/역할/근무, 구체적인 BIO 사실은 generic한 『美容』『コスメ』 한 단어보다 우선한다.",
+    "한국 관련 사실 하나만 강하게 확인돼도 그것만 사용해도 된다. 미용 근거가 약하면 미용을 새로 만들지 않는다.",
+    "BIO 문구를 그대로 이어 붙이지 말고 사실의 의미는 유지한 채 일본인이 실제 첫 DM에서 쓸 자연스러운 표현으로 다시 쓴다.",
+    "『経歴を拝見し』『姿を拝見し』『日韓夫婦美容室』처럼 인위적이거나 한국어식 명사 결합은 쓰지 않는다.",
     "과한 칭찬은 하지 않는다.",
     "8명 모두 같은 『〜に関する発信を拝見し、ご連絡しました。』 문형으로 획일화하지 않는다.",
     `이번 후보의 문형 힌트: ${styleHint}`,
-    "문형 힌트는 자연스러울 때만 사용하고, 근거가 뒷받침하지 않는 표현은 절대 만들지 않는다.",
-    "설명, 따옴표, 번호, 번역, 줄바꿈 없이 일본어 문장 1개만 반환한다.",
+    "문형 힌트는 자연스러울 때만 사용하고, 원본 근거와 충돌하면 반드시 원본 근거를 우선한다.",
+    "설명, 따옴표, 번호, 번역, 줄바꿈 없이 일본어 한 문장만 반환한다.",
     `근거 종류: ${basis.source}`,
-    `확인된 근거: ${basis.text}`,
+    `확인된 원본 근거: ${basis.text}`,
   ].join("\n");
 
   const failures: PersonalizationFailureKind[] = [];
@@ -273,7 +270,7 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
       temperature: 0.3,
       max_tokens: 120,
       messages: [
-        { role: "system", content: "You write one concise factual Japanese Instagram personalization sentence with natural variation. Do not copy profile wording mechanically." },
+        { role: "system", content: "You write one concise factual Japanese Instagram personalization sentence. Factual faithfulness to supplied evidence is more important than matching the PR category." },
         { role: "user", content: prompt },
       ],
     }),
@@ -403,9 +400,14 @@ function normalizeModelLine(value: string | null | undefined) {
     throw new DmLineValidationError("explanatory_output", line);
   }
 
-  const blocked = line.match(INTERNAL_OUTPUT_PATTERN)?.[0] ?? null;
-  if (blocked) {
-    throw new DmLineValidationError("unsafe_internal_reference", line, blocked);
+  const internal = line.match(INTERNAL_OUTPUT_PATTERN)?.[0] ?? null;
+  if (internal) {
+    throw new DmLineValidationError("unsafe_internal_reference", line, internal);
+  }
+
+  const unsupported = line.match(FORBIDDEN_PERSONALIZATION_PATTERN)?.[0] ?? null;
+  if (unsupported) {
+    throw new DmLineValidationError("unsafe_personalization_expression", line, unsupported);
   }
 
   return line;
@@ -431,6 +433,7 @@ function buildCorrectionPrompt(originalPrompt: string, error: DmLineValidationEr
     `검증 사유: ${error.code}`,
     blocked,
     "위 표현 또는 문제를 사용하지 말고, 같은 확인 근거 범위 안에서 자연스러운 일본어 한 문장으로 다시 작성한다.",
+    "원본 근거의 분야를 바꾸거나 새로운 관심/호감/전문성을 만들지 않는다.",
     "새 사실을 추가하지 말고, 내부 조회수/팔로워/Reels/검증/후보 정보는 절대 넣지 않는다.",
     "설명 없이 교정된 일본어 한 문장만 반환한다.",
   ].join("\n");
@@ -545,8 +548,8 @@ function stableBucket(value: string, size: number) {
   return hash % size;
 }
 
-function sanitizePersonalizationEvidence(value: string, category: SearchCategory) {
-  const chunks = compact(value, 1200)
+function sanitizePersonalizationEvidence(value: string) {
+  const chunks = compact(value, 1400)
     .split(/\s+·\s+|\s*[|｜]\s*|,\s*|、\s*|\s*・\s*|\s*\/\s*/)
     .map((chunk) => chunk
       .replace(/^\d+순위\s*/i, "")
@@ -555,14 +558,9 @@ function sanitizePersonalizationEvidence(value: string, category: SearchCategory
       .trim())
     .filter(Boolean)
     .filter((chunk) => !INTERNAL_EVIDENCE_PATTERN.test(chunk))
-    .filter((chunk) => !/^\d[\d.,Kk만천\s]*$/.test(chunk))
-    .filter((chunk) => {
-      if (category !== "beauty") return true;
-      if (BEAUTY_IRRELEVANT_PATTERN.test(chunk) && !BEAUTY_RELEVANT_PATTERN.test(chunk)) return false;
-      return BEAUTY_RELEVANT_PATTERN.test(chunk) || KOREA_RELEVANT_PATTERN.test(chunk);
-    });
+    .filter((chunk) => !/^\d[\d.,Kk만천\s]*$/.test(chunk));
 
-  return compact([...new Set(chunks)].join(" · "), 600);
+  return compact([...new Set(chunks)].join(" · "), 700);
 }
 
 function compact(value: string, maxLength: number) {
