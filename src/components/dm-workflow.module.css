@@ -103,31 +103,38 @@
 }
 
 .reviewBody {
-  min-height: 0;
-  overflow-y: auto;
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 280px;
+  height: min(640px, calc(100vh - 220px));
+  overflow: hidden;
 }
 
-.reviewRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+.reviewStream {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.reviewStream + .reviewStream {
+  border-left: 1px solid #e5e8eb;
+}
+
+.translationStream {
+  background: #fafbfc;
+}
+
+.reviewItem {
+  min-width: 0;
+  padding: 18px;
   border-bottom: 1px solid #edf0f2;
 }
 
-.reviewRow:last-child {
+.reviewItem:last-child {
   border-bottom: 0;
-}
-
-.reviewCell {
-  min-width: 0;
-  padding: 18px;
-}
-
-.reviewCell + .reviewCell {
-  border-left: 1px solid #edf0f2;
-}
-
-.translationCell {
-  background: #fafbfc;
 }
 
 .streamHandle {
@@ -224,10 +231,9 @@
 @media (max-width: 760px) {
   .backdrop { padding: 12px; }
   .modal { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
-  .reviewHead,
-  .reviewRow { grid-template-columns: 1fr; }
-  .reviewHeadCell + .reviewHeadCell,
-  .reviewCell + .reviewCell { border-left: 0; border-top: 1px solid #edf0f2; }
+  .reviewBody { min-height: 220px; height: calc(100vh - 220px); }
+  .reviewHeadCell { padding: 10px 12px; }
+  .reviewItem { padding: 14px 12px; }
   .streamTextarea,
   .streamTranslation { min-height: 100px; }
 }
