@@ -22,6 +22,14 @@ type AutomationRunResponse = {
   error?: string;
 };
 
+type DmPrepareResponse = {
+  ok: boolean;
+  preparedCount?: number;
+  providerCounts?: Record<string, number>;
+  models?: string[];
+  error?: string;
+};
+
 type AutomationHistoryGroup = {
   destination: string;
   handles: string[];
@@ -70,6 +78,8 @@ export function DiscoveryConsole() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [automationLoading, setAutomationLoading] = useState(false);
+  const [dmLoading, setDmLoading] = useState(false);
+  const [dmRegeneratingHandle, setDmRegeneratingHandle] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -171,7 +181,9 @@ export function DiscoveryConsole() {
     ? { mode: "duplicate" as const, label: "중복 확인 실행" }
     : statusFilter === "duplicate_passed"
       ? { mode: "instagram" as const, label: "최종 검증 실행" }
-      : null;
+      : statusFilter === "final_verification"
+        ? { mode: "dm" as const, label: "DM 준비 생성" }
+        : null;
 
   async function reloadCandidates(targetCategory: SearchCategory) {
     const response = await fetch(`/api/candidates?category=${targetCategory}`, { cache: "no-store" });
@@ -256,6 +268,47 @@ export function DiscoveryConsole() {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "OpenCode 자동 실행 실패" });
     } finally {
       setAutomationLoading(false);
+    }
+  }
+
+  async function runDmPrepare(targetHandles?: string[]) {
+    const handles = targetHandles ?? filteredCandidates.slice(0, 30).map((candidate) => candidate.handle);
+    if (!handles.length) {
+      setToast({ kind: "error", message: "DM을 준비할 최종 검증 완료 후보가 없습니다." });
+      return;
+    }
+
+    const singleHandle = targetHandles?.length === 1 ? targetHandles[0] : null;
+    if (singleHandle) setDmRegeneratingHandle(singleHandle);
+    else setDmLoading(true);
+    setToast(null);
+
+    try {
+      const response = await fetch("/api/dm/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, handles }),
+      });
+      const payload = await response.json() as DmPrepareResponse;
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "DM 준비 실패");
+
+      await reloadCandidates(category);
+      if (!singleHandle) setStatusFilter("dm_ready");
+      const counts = payload.providerCounts ?? {};
+      const details = [
+        counts.groq ? `Groq ${counts.groq}` : null,
+        counts.scaleway ? `Scaleway ${counts.scaleway}` : null,
+        counts.fallback ? `고정 fallback ${counts.fallback}` : null,
+      ].filter(Boolean).join(" · ");
+      setToast({
+        kind: "success",
+        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `DM 준비 ${payload.preparedCount ?? handles.length}명 완료`}${details ? ` · ${details}` : ""}`,
+      });
+    } catch (caught) {
+      setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 준비 실패" });
+    } finally {
+      setDmLoading(false);
+      setDmRegeneratingHandle(null);
     }
   }
 
@@ -355,16 +408,24 @@ export function DiscoveryConsole() {
                     whiteSpace: "nowrap",
                     ...(action.mode === "instagram" ? { background: "#dc2626" } : {}),
                   }}
-                  onClick={() => runAutomation(action.mode)}
-                  disabled={automationLoading || !filteredCandidates.length}
+                  onClick={() => action.mode === "dm" ? runDmPrepare() : runAutomation(action.mode)}
+                  disabled={automationLoading || dmLoading || !filteredCandidates.length}
                 >
-                  {automationLoading ? "실행 중…" : action.label}
+                  {action.mode === "dm" && dmLoading ? "생성 중…" : automationLoading ? "실행 중…" : action.label}
                 </button>
               )}
             </div>
           </div>
         </div>
-        {filteredCandidates.length ? <CandidateTable candidates={filteredCandidates} getState={candidateState} /> : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
+        {filteredCandidates.length ? (
+          <CandidateTable
+            candidates={filteredCandidates}
+            getState={candidateState}
+            dmView={statusFilter === "dm_ready"}
+            onRegenerate={(handle) => runDmPrepare([handle])}
+            regeneratingHandle={dmRegeneratingHandle}
+          />
+        ) : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
       </section>
 
       {toast && <div className={`toast ${toast.kind}`}>{toast.message}</div>}
@@ -372,7 +433,57 @@ export function DiscoveryConsole() {
   );
 }
 
-function CandidateTable({ candidates, getState }: { candidates: DiscoveryCandidate[]; getState: (candidate: DiscoveryCandidate) => CandidateViewState }) {
+function CandidateTable({
+  candidates,
+  getState,
+  dmView,
+  onRegenerate,
+  regeneratingHandle,
+}: {
+  candidates: DiscoveryCandidate[];
+  getState: (candidate: DiscoveryCandidate) => CandidateViewState;
+  dmView: boolean;
+  onRegenerate: (handle: string) => void;
+  regeneratingHandle: string | null;
+}) {
+  if (dmView) {
+    return (
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th style={{ width: 170 }}>Instagram</th><th style={{ width: "30%" }}>개인화 근거</th><th>일본어 DM</th><th style={{ width: 100 }}>생성</th></tr></thead>
+          <tbody>
+            {candidates.map((candidate) => (
+              <tr key={candidate.handle}>
+                <td>
+                  <div className="handle">@{candidate.handle}</div>
+                  <a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a>
+                </td>
+                <td>
+                  <div style={{ fontWeight: 700, marginBottom: 5 }}>{candidate.dmPersonalizationSource ?? "기존 검증 정보"}</div>
+                  <div style={{ color: "#6b7684", lineHeight: 1.55, whiteSpace: "normal" }}>{candidate.dmPersonalizationBasis ?? "-"}</div>
+                </td>
+                <td>
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>{candidate.dmText ?? "-"}</div>
+                  <div style={{ marginTop: 7, color: "#8b95a1", fontSize: 11 }}>{dmProviderLabel(candidate)}</div>
+                </td>
+                <td>
+                  <button
+                    className="secondary"
+                    style={{ whiteSpace: "nowrap", padding: "8px 10px" }}
+                    onClick={() => onRegenerate(candidate.handle)}
+                    disabled={regeneratingHandle === candidate.handle}
+                  >
+                    {regeneratingHandle === candidate.handle ? "생성 중…" : "다시 생성"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <div className="table-wrap">
       <table>
@@ -543,4 +654,11 @@ function verificationLabel(candidate: DiscoveryCandidate) {
   if (candidate.verificationStatus === "verified") return "검증 완료";
   if (candidate.verificationStatus === "insufficient") return "일부 확인불가";
   return "실측 대기";
+}
+
+function dmProviderLabel(candidate: DiscoveryCandidate) {
+  if (candidate.dmProvider === "groq") return `Groq · ${candidate.dmModel ?? "-"}`;
+  if (candidate.dmProvider === "scaleway") return `Scaleway · ${candidate.dmModel ?? "-"}`;
+  if (candidate.dmProvider === "fallback") return "고정 fallback · LLM 실패 시 안전 문구";
+  return candidate.dmModel ?? "-";
 }
