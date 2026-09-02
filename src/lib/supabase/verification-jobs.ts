@@ -5,6 +5,7 @@ import { listCandidates } from "./candidates";
 import { getSupabaseAdmin } from "./admin";
 
 export type VerificationJobKind = "duplicate" | "instagram";
+export type VerificationJobStatus = "pending" | "completed" | "failed";
 export type VerificationJobDestination =
   | "검증 필요"
   | "추천 후보"
@@ -30,11 +31,22 @@ export type RecentVerificationJob = {
   id: string;
   category: SearchCategory;
   handles: string[];
-  status: "pending" | "completed";
+  processedHandles: string[];
+  status: VerificationJobStatus;
   createdAt: string;
   completedAt: string | null;
+  failedAt: string | null;
+  failureMessage: string | null;
   jobKind: VerificationJobKind;
   resultSummary: VerificationJobResultSummary | null;
+};
+
+export type VerificationJobProgress = {
+  id: string;
+  status: VerificationJobStatus;
+  processedCount: number;
+  totalCount: number;
+  failureMessage: string | null;
 };
 
 const DESTINATIONS: VerificationJobDestination[] = [
@@ -46,6 +58,8 @@ const DESTINATIONS: VerificationJobDestination[] = [
   "제외",
   "미반영",
 ];
+
+const STALE_PENDING_MS = 2 * 60 * 60 * 1000;
 
 export async function createVerificationJob(
   category: SearchCategory,
@@ -60,7 +74,7 @@ export async function createVerificationJob(
 
   const { data, error } = await supabase
     .from("creator_verification_jobs")
-    .insert({ category, handles: normalized, job_kind: jobKind })
+    .insert({ category, handles: normalized, processed_handles: [], job_kind: jobKind })
     .select("id")
     .single();
 
@@ -72,9 +86,11 @@ export async function listRecentVerificationJobs(category: SearchCategory, limit
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
 
+  await expireStalePendingJobs();
+
   const { data, error } = await supabase
     .from("creator_verification_jobs")
-    .select("id, category, handles, status, created_at, completed_at, job_kind, result_summary")
+    .select("id, category, handles, processed_handles, status, created_at, completed_at, failed_at, failure_message, job_kind, result_summary")
     .eq("category", category)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -85,9 +101,12 @@ export async function listRecentVerificationJobs(category: SearchCategory, limit
     id: String(row.id),
     category,
     handles: normalizeHandles(Array.isArray(row.handles) ? row.handles.map(String) : []),
-    status: row.status === "completed" ? "completed" : "pending",
+    processedHandles: normalizeHandles(Array.isArray(row.processed_handles) ? row.processed_handles.map(String) : []),
+    status: normalizeJobStatus(row.status),
     createdAt: String(row.created_at),
     completedAt: row.completed_at ? String(row.completed_at) : null,
+    failedAt: row.failed_at ? String(row.failed_at) : null,
+    failureMessage: nullableString(row.failure_message),
     jobKind: row.job_kind === "duplicate" ? "duplicate" : "instagram",
     resultSummary: normalizeResultSummary(row.result_summary),
   }));
@@ -102,7 +121,8 @@ export async function assertVerificationJob(
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
 
-  const submitted = handles.map(normalizeHandle);
+  const submitted = handles.map(normalizeHandle).filter(Boolean);
+  if (!submitted.length) throw new Error("제출 결과가 비어 있습니다.");
   if (new Set(submitted).size !== submitted.length) throw new Error("결과에 중복 계정이 포함되어 있습니다.");
 
   const { data, error } = await supabase
@@ -112,7 +132,9 @@ export async function assertVerificationJob(
     .single();
 
   if (error || !data) throw new Error("존재하지 않는 작업입니다.");
-  if (String(data.status) !== "pending") throw new Error("이미 완료된 작업입니다.");
+  const status = normalizeJobStatus(data.status);
+  if (status === "completed") throw new Error("이미 완료된 작업입니다.");
+  if (status === "failed") throw new Error("이미 실패 처리된 작업입니다. 남은 후보만 다시 실행하세요.");
   if (String(data.category) !== category) throw new Error("작업 장르가 일치하지 않습니다.");
   if (String(data.job_kind ?? "instagram") !== expectedKind) throw new Error("작업 종류가 일치하지 않습니다.");
 
@@ -121,29 +143,136 @@ export async function assertVerificationJob(
     throw new Error("작업이 6시간을 지나 만료되었습니다. 다시 실행하세요.");
   }
 
-  const expected = normalizeHandles(Array.isArray(data.handles) ? data.handles.map(String) : []);
-  const actual = normalizeHandles(submitted);
-  if (expected.length !== actual.length || expected.some((handle, index) => handle !== actual[index])) {
-    throw new Error("작업 후보 목록과 제출 결과가 일치하지 않습니다.");
+  const expected = new Set(normalizeHandles(Array.isArray(data.handles) ? data.handles.map(String) : []));
+  const unexpected = submitted.filter((handle) => !expected.has(handle));
+  if (unexpected.length) {
+    throw new Error(`작업 후보가 아닌 계정이 포함되어 있습니다: ${unexpected.map((handle) => `@${handle}`).join(", ")}`);
   }
 }
 
-export async function completeVerificationJob(jobId: string, category: SearchCategory, handles: string[]) {
+export async function recordVerificationJobProgress(
+  jobId: string,
+  category: SearchCategory,
+  handles: string[],
+): Promise<VerificationJobProgress> {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
 
-  const resultSummary = await buildResultSummary(category, handles);
+  const { data, error } = await supabase
+    .from("creator_verification_jobs")
+    .select("id, handles, processed_handles, status, failure_message")
+    .eq("id", jobId)
+    .single();
+
+  if (error || !data) throw new Error("작업 진행률을 찾지 못했습니다.");
+  const expected = normalizeHandles(Array.isArray(data.handles) ? data.handles.map(String) : []);
+  const current = normalizeHandles(Array.isArray(data.processed_handles) ? data.processed_handles.map(String) : []);
+  const merged = normalizeHandles([...current, ...handles]);
+  const status = normalizeJobStatus(data.status);
+
+  if (status !== "pending") {
+    return {
+      id: jobId,
+      status,
+      processedCount: current.length,
+      totalCount: expected.length,
+      failureMessage: nullableString(data.failure_message),
+    };
+  }
+
+  const expectedSet = new Set(expected);
+  const processed = merged.filter((handle) => expectedSet.has(handle));
+  const completed = expected.length > 0 && processed.length === expected.length;
+  const now = new Date().toISOString();
+
+  if (completed) {
+    const resultSummary = await buildResultSummary(category, expected);
+    const { error: updateError } = await supabase
+      .from("creator_verification_jobs")
+      .update({
+        processed_handles: processed,
+        status: "completed",
+        completed_at: now,
+        failed_at: null,
+        failure_message: null,
+        result_summary: resultSummary,
+      })
+      .eq("id", jobId)
+      .eq("status", "pending");
+
+    if (updateError) throw new Error(`작업 완료 처리 실패: ${updateError.message}`);
+    return { id: jobId, status: "completed", processedCount: processed.length, totalCount: expected.length, failureMessage: null };
+  }
+
+  const { error: updateError } = await supabase
+    .from("creator_verification_jobs")
+    .update({ processed_handles: processed })
+    .eq("id", jobId)
+    .eq("status", "pending");
+
+  if (updateError) throw new Error(`작업 진행률 저장 실패: ${updateError.message}`);
+  return { id: jobId, status: "pending", processedCount: processed.length, totalCount: expected.length, failureMessage: null };
+}
+
+export async function getVerificationJobProgress(jobId: string): Promise<VerificationJobProgress> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
+
+  const { data, error } = await supabase
+    .from("creator_verification_jobs")
+    .select("id, handles, processed_handles, status, failure_message")
+    .eq("id", jobId)
+    .single();
+
+  if (error || !data) throw new Error("존재하지 않는 작업입니다.");
+  const handles = normalizeHandles(Array.isArray(data.handles) ? data.handles.map(String) : []);
+  const processed = normalizeHandles(Array.isArray(data.processed_handles) ? data.processed_handles.map(String) : []);
+  return {
+    id: jobId,
+    status: normalizeJobStatus(data.status),
+    processedCount: processed.length,
+    totalCount: handles.length,
+    failureMessage: nullableString(data.failure_message),
+  };
+}
+
+export async function failVerificationJob(jobId: string, message: string): Promise<VerificationJobProgress> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
+
+  const cleanMessage = message.replace(/[\t\r\n ]+/g, " ").trim().slice(0, 500) || "OpenCode 작업이 완료되지 않았습니다.";
   const { error } = await supabase
     .from("creator_verification_jobs")
     .update({
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      result_summary: resultSummary,
+      status: "failed",
+      failed_at: new Date().toISOString(),
+      failure_message: cleanMessage,
     })
     .eq("id", jobId)
     .eq("status", "pending");
 
-  if (error) throw new Error(`작업 완료 처리 실패: ${error.message}`);
+  if (error) throw new Error(`작업 실패 상태 저장 실패: ${error.message}`);
+  return getVerificationJobProgress(jobId);
+}
+
+export async function completeVerificationJob(jobId: string, category: SearchCategory, handles: string[]) {
+  return recordVerificationJobProgress(jobId, category, handles);
+}
+
+async function expireStalePendingJobs() {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const cutoff = new Date(Date.now() - STALE_PENDING_MS).toISOString();
+  const { error } = await supabase
+    .from("creator_verification_jobs")
+    .update({
+      status: "failed",
+      failed_at: new Date().toISOString(),
+      failure_message: "OpenCode 작업이 종료 신호 없이 2시간 이상 pending 상태여서 자동 실패 처리되었습니다.",
+    })
+    .eq("status", "pending")
+    .lt("created_at", cutoff);
+  if (error) console.warn("verification_job_expire_failed", error.message);
 }
 
 async function buildResultSummary(category: SearchCategory, handles: string[]): Promise<VerificationJobResultSummary> {
@@ -224,6 +353,16 @@ function normalizeResultSummary(value: unknown): VerificationJobResultSummary | 
     capturedAt: String(row.capturedAt ?? ""),
     groups,
   };
+}
+
+function normalizeJobStatus(value: unknown): VerificationJobStatus {
+  if (value === "completed" || value === "failed") return value;
+  return "pending";
+}
+
+function nullableString(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  return String(value);
 }
 
 function normalizeHandles(handles: string[]) {
