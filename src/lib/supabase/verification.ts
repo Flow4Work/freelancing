@@ -34,7 +34,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
 
   const handles = [...new Set(normalizedResults.map((result) => result.handle))];
   const [{ data: candidates, error: candidateError }, { data: contacted, error: contactedError }] = await Promise.all([
-    supabase.from("creator_candidates").select("normalized_handle, followers").eq("category", category).in("normalized_handle", handles),
+    supabase.from("creator_candidates").select("normalized_handle, followers, discovery_status").eq("category", category).in("normalized_handle", handles),
     supabase.from("creator_contacted_handles").select("normalized_handle").in("normalized_handle", handles),
   ]);
 
@@ -45,6 +45,10 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   const existingFollowers = new Map<string, number | null>((candidates ?? []).map((row): [string, number | null] => [
     String(row.normalized_handle),
     typeof row.followers === "number" && Number.isFinite(row.followers) ? row.followers : null,
+  ]));
+  const existingDiscoveryStatus = new Map<string, string>((candidates ?? []).map((row): [string, string] => [
+    String(row.normalized_handle),
+    String(row.discovery_status ?? ""),
   ]));
   const blocked = new Set((contacted ?? []).map((row) => String(row.normalized_handle)));
   let updated = 0;
@@ -92,6 +96,12 @@ export async function applyInstagramVerificationResults(category: SearchCategory
       continue;
     }
 
+    const previousDiscoveryStatus = existingDiscoveryStatus.get(result.handle);
+    const discoveryStatus = decision.verificationStatus === "insufficient"
+      && (previousDiscoveryStatus === "search_qualified" || previousDiscoveryStatus === "needs_review")
+      ? previousDiscoveryStatus
+      : decision.discoveryStatus;
+
     const { error } = await supabase
       .from("creator_candidates")
       .update({
@@ -122,7 +132,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
         category_relevant: result.categoryRelevant,
         recent_activity: result.recentActivity,
         verification_status: decision.verificationStatus,
-        discovery_status: decision.discoveryStatus,
+        discovery_status: discoveryStatus,
         verified_at: now,
         updated_at: now,
       })
