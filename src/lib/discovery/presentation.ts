@@ -39,12 +39,14 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     const sourceState = getSearchStageViewState(candidate);
     if (sourceState === "unmapped") return "unmapped";
 
-    // 중복 통과 후 최종 검증이 끝나지 않았거나 필수값이 부족하면 중복 통과에 남겨 재검증한다.
-    if (candidate.verificationStatus === "needs_instagram" || candidate.verificationStatus === "insufficient") {
+    if (candidate.verificationStatus === "needs_instagram") {
       return "duplicate_passed";
     }
 
-    // 실제 모집조건을 모두 통과한 qualified + verified만 최종 검증 완료로 보낸다.
+    if (candidate.verificationStatus === "insufficient") {
+      return "final_verification";
+    }
+
     // 최종 검증 이후 생성된 DM만 DM 준비로 보낸다. 재검증이 더 최신이면 다시 생성해야 한다.
     if (candidate.verificationStatus === "verified" && candidate.candidateStatus === "qualified") {
       const dmGeneratedAt = candidate.dmGeneratedAt ? Date.parse(candidate.dmGeneratedAt) : Number.NaN;
