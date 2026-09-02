@@ -169,7 +169,7 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
               ? "lifestyle"
               : "other";
 
-  const eligibility: Eligibility = accountType === "business" || koreaAffinity === "none"
+  const eligibility: Eligibility = accountType === "business"
     ? "fail"
     : accountType === "creator"
       && (koreaAffinity === "strong" || koreaAffinity === "yes")
