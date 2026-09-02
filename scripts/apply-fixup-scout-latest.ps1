@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Repo = "C:\Users\동호\freelancing",
   [string]$Branch = "feat/fixup-scout-foundation"
 )
