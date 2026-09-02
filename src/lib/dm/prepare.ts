@@ -15,12 +15,55 @@ const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조�
 const BEAUTY_RELEVANT_PATTERN = /(?:美容|コスメ|スキン|肌|メイク|皮膚|ヘア|美容師|サロン|beauty|cosme|cosmetic|skincare|skin|makeup|hair|미용|뷰티|코스메|화장|피부|메이크|헤어)/i;
 const KOREA_RELEVANT_PATTERN = /(?:韓国|渡韓|在韓|日韓|ソウル|釜山|korea|seoul|busan|한국|방한|재한|한일|서울|부산)/i;
 const BEAUTY_IRRELEVANT_PATTERN = /(?:カフェ|植物|編み物|グルメ|料理|食事|コーヒー|ファッション|コーデ|cafe|coffee|plant|knit|food|fashion|카페|식물|뜨개|맛집|음식|패션|코디)/i;
-const PERSONALIZATION_ENDING_PATTERN = /(?:ご連絡しました|メッセージしました|お声がけしました|ご案内できればと思いました|ご案内したいと思いました)。$/;
 
 type PersonalizationBasis = {
   source: string;
   text: string;
 };
+
+type LineValidationCode =
+  | "empty_response"
+  | "code_block"
+  | "line_break"
+  | "invalid_length"
+  | "not_japanese"
+  | "multiple_sentences"
+  | "explanatory_output"
+  | "unsafe_internal_reference"
+  | "generic_fallback_with_evidence";
+
+type PersonalizationFailureKind =
+  | "key_missing"
+  | "auth"
+  | "rate_limit_429"
+  | "timeout"
+  | "provider_http"
+  | "provider_error"
+  | "validation";
+
+class DmLineValidationError extends Error {
+  readonly code: LineValidationCode;
+  readonly rejectedLine: string;
+  readonly blockedExpression: string | null;
+
+  constructor(code: LineValidationCode, rejectedLine: string, blockedExpression: string | null = null) {
+    super(code);
+    this.name = "DmLineValidationError";
+    this.code = code;
+    this.rejectedLine = rejectedLine;
+    this.blockedExpression = blockedExpression;
+  }
+}
+
+class DmProviderHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, detail: string) {
+    super(`${status}${detail ? ` ${detail}` : ""}`);
+    this.name = "DmProviderHttpError";
+    this.status = status;
+  }
+}
 
 export type PreparedDm = {
   handle: string;
@@ -155,29 +198,67 @@ async function generatePersonalizationLine(
     `확인된 근거: ${basis.text}`,
   ].join("\n");
 
+  const failures: PersonalizationFailureKind[] = [];
   const groqKey = process.env.GROQ_API_KEY?.trim();
+
   if (groqKey) {
     try {
-      const line = await requestLine(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt);
-      if (line === SAFE_FALLBACK_LINE) throw new Error("generic_fallback_with_evidence");
+      const line = ensureSpecificPersonalization(await requestLine(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt));
       return { line, provider: "groq", model: GROQ_DM_MODEL };
     } catch (error) {
-      console.warn("dm_groq_failed", safeError(error));
+      if (error instanceof DmLineValidationError) {
+        logValidationFailure("groq", "initial", error);
+        try {
+          const repairedLine = ensureSpecificPersonalization(await requestLine(
+            GROQ_URL,
+            groqKey,
+            GROQ_DM_MODEL,
+            buildCorrectionPrompt(prompt, error),
+          ));
+          console.info("dm_groq_validation_repaired", `handle=@${handle} initial_code=${error.code}`);
+          return { line: repairedLine, provider: "groq", model: GROQ_DM_MODEL };
+        } catch (repairError) {
+          if (repairError instanceof DmLineValidationError) {
+            logValidationFailure("groq", "repair", repairError);
+            failures.push("validation");
+          } else {
+            const kind = classifyProviderFailure(repairError);
+            console.warn("dm_groq_repair_provider_failed", `kind=${kind} error=${safeError(repairError)}`);
+            failures.push(kind);
+          }
+        }
+      } else {
+        const kind = classifyProviderFailure(error);
+        console.warn("dm_groq_provider_failed", `kind=${kind} error=${safeError(error)}`);
+        failures.push(kind);
+      }
     }
+  } else {
+    console.warn("dm_groq_key_missing");
+    failures.push("key_missing");
   }
 
   const scalewayKey = process.env.SCW_SECRET_KEY?.trim();
   if (scalewayKey) {
     try {
-      const line = await requestLine(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt);
-      if (line === SAFE_FALLBACK_LINE) throw new Error("generic_fallback_with_evidence");
+      const line = ensureSpecificPersonalization(await requestLine(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt));
       return { line, provider: "scaleway", model: SCALEWAY_DM_MODEL };
     } catch (error) {
-      console.warn("dm_scaleway_failed", safeError(error));
+      if (error instanceof DmLineValidationError) {
+        logValidationFailure("scaleway", "initial", error);
+        failures.push("validation");
+      } else {
+        const kind = classifyProviderFailure(error);
+        console.warn("dm_scaleway_provider_failed", `kind=${kind} error=${safeError(error)}`);
+        failures.push(kind);
+      }
     }
+  } else {
+    console.warn("dm_scaleway_key_missing");
+    failures.push("key_missing");
   }
 
-  throw new Error("DM 개인화 생성에 실패했습니다. Groq/Scaleway 설정을 확인하세요.");
+  throw new Error(personalizationFailureMessage(failures));
 }
 
 async function requestLine(url: string, apiKey: string, model: string, prompt: string) {
@@ -201,7 +282,7 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
 
   if (!response.ok) {
     const detail = compact(await response.text(), 240);
-    throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
+    throw new DmProviderHttpError(response.status, detail);
   }
 
   const payload = await response.json() as {
@@ -231,7 +312,7 @@ async function requestTranslation(url: string, apiKey: string, model: string, pr
 
   if (!response.ok) {
     const detail = compact(await response.text(), 240);
-    throw new Error(`${response.status}${detail ? ` ${detail}` : ""}`);
+    throw new DmProviderHttpError(response.status, detail);
   }
 
   const payload = await response.json() as {
@@ -292,19 +373,104 @@ function sleep(ms: number) {
 }
 
 function normalizeModelLine(value: string | null | undefined) {
-  if (!value) throw new Error("empty_response");
-  const line = value
-    .replace(/^```(?:json|text)?/i, "")
-    .replace(/```$/i, "")
+  if (!value) throw new DmLineValidationError("empty_response", "");
+
+  const raw = value.trim();
+  if (raw.includes("```")) {
+    throw new DmLineValidationError("code_block", compact(raw, 220), "```");
+  }
+  if (/[\r\n]/.test(raw)) {
+    throw new DmLineValidationError("line_break", compact(raw, 220));
+  }
+
+  const line = raw
     .replace(/^[\"'「『]|[\"'」』]$/g, "")
-    .replace(/\s+/g, " ")
+    .replace(/[\t ]+/g, " ")
     .trim();
 
-  if (!line || line.length > 220) throw new Error("invalid_length");
-  if (!/[ぁ-んァ-ヶ一-龯]/u.test(line)) throw new Error("not_japanese");
-  if (!PERSONALIZATION_ENDING_PATTERN.test(line)) throw new Error("unexpected_ending");
-  if (INTERNAL_OUTPUT_PATTERN.test(line)) throw new Error("unsafe_internal_reference");
+  if (!line || line.length > 220) {
+    throw new DmLineValidationError("invalid_length", compact(line, 220));
+  }
+  if (!/[ぁ-んァ-ヶ一-龯]/u.test(line)) {
+    throw new DmLineValidationError("not_japanese", line);
+  }
+
+  const sentenceGroups = line.match(/[。！？!?]+/g) ?? [];
+  if (sentenceGroups.length > 1) {
+    throw new DmLineValidationError("multiple_sentences", line);
+  }
+  if (/^(?:[-*•]|\d+[.)]|説明[:：]|修正版[:：]|個人化[:：]|以下[:：]?)/.test(line)) {
+    throw new DmLineValidationError("explanatory_output", line);
+  }
+
+  const blocked = line.match(INTERNAL_OUTPUT_PATTERN)?.[0] ?? null;
+  if (blocked) {
+    throw new DmLineValidationError("unsafe_internal_reference", line, blocked);
+  }
+
   return line;
+}
+
+function ensureSpecificPersonalization(line: string) {
+  if (line === SAFE_FALLBACK_LINE) {
+    throw new DmLineValidationError("generic_fallback_with_evidence", line, SAFE_FALLBACK_LINE);
+  }
+  return line;
+}
+
+function buildCorrectionPrompt(originalPrompt: string, error: DmLineValidationError) {
+  const blocked = error.blockedExpression
+    ? `사용하지 말아야 할 표현: ${error.blockedExpression}`
+    : `피해야 할 검증 사유: ${error.code}`;
+
+  return [
+    originalPrompt,
+    "",
+    "이전 생성문이 품질 검증에 걸려 사용할 수 없다.",
+    `이전 생성문: ${error.rejectedLine}`,
+    `검증 사유: ${error.code}`,
+    blocked,
+    "위 표현 또는 문제를 사용하지 말고, 같은 확인 근거 범위 안에서 자연스러운 일본어 한 문장으로 다시 작성한다.",
+    "새 사실을 추가하지 말고, 내부 조회수/팔로워/Reels/검증/후보 정보는 절대 넣지 않는다.",
+    "설명 없이 교정된 일본어 한 문장만 반환한다.",
+  ].join("\n");
+}
+
+function logValidationFailure(provider: "groq" | "scaleway", stage: "initial" | "repair", error: DmLineValidationError) {
+  const blocked = error.blockedExpression ? ` blocked=${compact(error.blockedExpression, 80)}` : "";
+  console.warn(
+    `dm_${provider}_validation_failed`,
+    `stage=${stage} code=${error.code}${blocked} output=${compact(error.rejectedLine, 220)}`,
+  );
+}
+
+function classifyProviderFailure(error: unknown): PersonalizationFailureKind {
+  if (error instanceof DmProviderHttpError) {
+    if (error.status === 429) return "rate_limit_429";
+    if (error.status === 401 || error.status === 403) return "auth";
+    return "provider_http";
+  }
+  if (error instanceof Error && error.name === "AbortError") return "timeout";
+  return "provider_error";
+}
+
+function personalizationFailureMessage(failures: PersonalizationFailureKind[]) {
+  if (failures.length > 0 && failures.every((failure) => failure === "key_missing")) {
+    return "DM 개인화 생성 실패: LLM API 키가 설정되지 않았습니다.";
+  }
+  if (failures.includes("auth")) {
+    return "DM 개인화 생성 실패: LLM provider 인증에 실패했습니다.";
+  }
+  if (failures.includes("rate_limit_429")) {
+    return "DM 개인화 생성 실패: LLM provider rate limit(429)이 재시도 후에도 해소되지 않았습니다.";
+  }
+  if (failures.includes("validation")) {
+    return "DM 개인화 생성 실패: 생성 문장이 품질 검증을 통과하지 못했습니다.";
+  }
+  if (failures.includes("timeout")) {
+    return "DM 개인화 생성 실패: LLM provider 요청이 timeout 됐습니다.";
+  }
+  return "DM 개인화 생성 실패: LLM provider 요청에 실패했습니다.";
 }
 
 function normalizeKoreanTranslation(value: string | null | undefined) {
