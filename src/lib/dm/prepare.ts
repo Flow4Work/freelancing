@@ -12,11 +12,14 @@ const MAX_RETRY_DELAY_MS = 65_000;
 
 const INTERNAL_EVIDENCE_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|followers?|following|平均|평균|\b8\s*\/\s*8\b|\b\d+건\b|순위|順位|verified|qualified|검증|検証|모집조건|条件\s*(?:충족|通過)?|중복|重複|후보|候補|판정|判定|공개.?개인|개인\s*계정|최근\s*게시일|null|log\s*in|sign\s*up|photo\s*by|video\s*by|show\s*more|highlight\s*story|read\s*more)/i;
 const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|フォロワ|followers?|平均|평균|8\s*\/\s*8|8件|順位|verified|qualified|検証|검증|条件|모집조건|重複|중복|候補|후보|判定|판정|点に惹かれ)/i;
+const CASUAL_TONE_PATTERN = /(?:日常|ライフスタイル|旅行|旅|カフェ|コーデ|ファッション|ママ|夫婦|好き|愛用|暮らし|vlog|daily|lifestyle|travel|fashion|카페|여행|일상|패션|부부|애정)/i;
 
 type PersonalizationBasis = {
   source: string;
   text: string;
 };
+
+type OfferStyle = "paid" | "reward" | "fee" | "job";
 
 export type PreparedDm = {
   handle: string;
@@ -32,8 +35,9 @@ export type PreparedDm = {
 
 export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise<PreparedDm> {
   const basis = selectPersonalizationBasis(candidate);
-  const generated = await generatePersonalizationLine(basis);
-  const dmText = composeDm(candidate.category, generated.line);
+  const generated = await generatePersonalizationLine(candidate.handle, basis);
+  const offerStyle = selectOfferStyle(candidate.handle, basis);
+  const dmText = composeDm(candidate.category, generated.line, offerStyle);
   const koreanText = await translateDmToKorean(dmText);
 
   return {
@@ -120,11 +124,15 @@ export async function translateDmToKorean(japaneseText: string) {
   throw new Error("DM 한국어 번역에 실패했습니다. Groq/Scaleway 설정을 확인하세요.");
 }
 
-async function generatePersonalizationLine(basis: PersonalizationBasis): Promise<{ line: string; provider: DmProvider; model: string }> {
+async function generatePersonalizationLine(
+  handle: string,
+  basis: PersonalizationBasis,
+): Promise<{ line: string; provider: DmProvider; model: string }> {
   if (basis.source === "일반") {
     return { line: SAFE_FALLBACK_LINE, provider: "fallback", model: "fixed-fallback-v1" };
   }
 
+  const styleHint = personalizationStyleHint(handle);
   const prompt = [
     "다음 확인된 공개 프로필/콘텐츠 근거만 사용해 Instagram 첫 DM의 개인화 부분을 자연스러운 일본어 1문장으로 작성한다.",
     "상대에게 직접 말해도 자연스러운 사실만 사용한다. 내부 운영 정보나 평가 정보는 절대 사용하지 않는다.",
@@ -132,7 +140,10 @@ async function generatePersonalizationLine(basis: PersonalizationBasis): Promise
     "확인되지 않은 게시물, 직업, 경력, 거주지, 방문 횟수, 취미, 관심사, 성과를 추가하거나 추측하지 않는다.",
     "근거의 의미를 과장하거나 구체화하지 않는다.",
     "가장 자연스러운 사실 1개, 많아도 서로 직접 연결되는 사실 2개만 사용하고 정보를 나열하지 않는다.",
-    "기본적으로 『〇〇に関する発信を拝見し、ご連絡しました。』처럼 담백하게 쓰고, 『〜点に惹かれ』 같은 영업 문체는 쓰지 않는다.",
+    "8명 모두 같은 『〜に関する発信を拝見し、ご連絡しました。』 문형으로 획일화하지 않는다.",
+    "과한 칭찬이나 『〜点に惹かれ』 같은 영업 문체는 쓰지 않는다.",
+    `이번 후보의 문형 힌트: ${styleHint}`,
+    "문형 힌트는 자연스러울 때만 사용하고, 근거가 뒷받침하지 않는 표현은 절대 만들지 않는다.",
     "문장은 상대가 무엇을 보고 연락했는지 알 수 있게 쓰고, 반드시 『ご連絡しました。』로 끝낸다.",
     "구체적인 근거가 있으므로 generic 문장 『プロフィールを拝見し、ご連絡しました。』로 회피하지 않는다.",
     "설명, 따옴표, 번호, 번역, 줄바꿈 없이 일본어 문장 1개만 반환한다.",
@@ -174,10 +185,10 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
     },
     body: JSON.stringify({
       model,
-      temperature: 0.1,
+      temperature: 0.25,
       max_tokens: 120,
       messages: [
-        { role: "system", content: "You write one concise factual Japanese personalization sentence using only user-facing evidence." },
+        { role: "system", content: "You write one concise factual Japanese personalization sentence using only user-facing evidence, with natural sentence-pattern variety." },
         { role: "user", content: prompt },
       ],
     }),
@@ -303,12 +314,66 @@ function normalizeKoreanTranslation(value: string | null | undefined) {
   return text;
 }
 
-function composeDm(category: SearchCategory, personalizationLine: string) {
+function composeDm(category: SearchCategory, personalizationLine: string, offerStyle: OfferStyle) {
   const fixed = category === "beauty"
-    ? "韓国のFixUpでは、美容に関するクリエイター企画を行っています。韓国での美容体験にもご興味はありますか？"
-    : "韓国のFixUpでは、グルメに関するクリエイター向けPR企画をご案内しています。韓国のお店を紹介するPR企画にもご興味はありますか？";
+    ? beautyOfferCopy(offerStyle)
+    : foodOfferCopy(offerStyle);
 
   return ["突然のDM失礼いたします。", personalizationLine, fixed].join("\n");
+}
+
+function beautyOfferCopy(style: OfferStyle) {
+  if (style === "reward") {
+    return "韓国のFixUpでは、韓国でご参加いただける報酬ありの美容PR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  if (style === "fee") {
+    return "韓国のFixUpでは、韓国に来られるタイミングでご参加いただける、ギャラありの美容PR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  if (style === "job") {
+    return "韓国のFixUpでは、韓国で実際にご参加いただく美容PRのお仕事をご案内しています。報酬のある案件です。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  return "韓国のFixUpでは、韓国にお越しの際にご参加いただける有償の美容PR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+}
+
+function foodOfferCopy(style: OfferStyle) {
+  if (style === "reward") {
+    return "韓国のFixUpでは、韓国でご参加いただける報酬ありのグルメPR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  if (style === "fee") {
+    return "韓国のFixUpでは、韓国に来られるタイミングでご参加いただける、ギャラありのグルメPR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  if (style === "job") {
+    return "韓国のFixUpでは、韓国で実際にご参加いただくグルメPRのお仕事をご案内しています。報酬のある案件です。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+  }
+  return "韓国のFixUpでは、韓国にお越しの際にご参加いただける有償のグルメPR案件をご案内しています。近いうちに韓国へ来られるご予定はありますか？ご興味があれば詳細をお送りします。";
+}
+
+function selectOfferStyle(handle: string, basis: PersonalizationBasis): OfferStyle {
+  const casual = CASUAL_TONE_PATTERN.test(basis.text);
+  const bucket = stableBucket(handle, casual ? 4 : 3);
+
+  if (casual && bucket === 2) return "fee";
+  if (bucket === 1) return "reward";
+  if (bucket === 2) return "job";
+  return "paid";
+}
+
+function personalizationStyleHint(handle: string) {
+  const variants = [
+    "『〜を発信されているのを拝見し、ご連絡しました。』系。自然ならこの流れを使う。",
+    "『〜についての投稿を拝見し、ご連絡しました。』系。投稿と断定できる根拠がある場合だけ使う。",
+    "『〜されていると拝見し、ぜひご案内したいと思いご連絡しました。』系。活動事実が明確な場合だけ使う。",
+    "『〜を拝見し、今回ご案内したいと思いご連絡しました。』系。短く自然にまとめる。",
+  ];
+  return variants[stableBucket(handle, variants.length)];
+}
+
+function stableBucket(value: string, size: number) {
+  let hash = 0;
+  for (const char of value) {
+    hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
+  }
+  return hash % size;
 }
 
 function sanitizePersonalizationEvidence(value: string) {
