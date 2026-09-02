@@ -497,7 +497,12 @@ export function DiscoveryConsole() {
         const response = await fetch("/api/dm/approve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, handle: draft.handle, japaneseText: draft.japaneseText }),
+          body: JSON.stringify({
+            category,
+            handle: draft.handle,
+            japaneseText: draft.japaneseText,
+            koreanText: draft.koreanText,
+          }),
         });
         const payload = await response.json() as DmContactsResponse;
         if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? `@${draft.handle} DM 통과 처리 실패`);
@@ -684,9 +689,9 @@ export function DiscoveryConsole() {
             </div>
 
             <div className={dmStyles.reviewBody}>
-              {dmDrafts.map((draft) => (
-                <div className={dmStyles.reviewRow} key={draft.handle}>
-                  <div className={dmStyles.reviewCell}>
+              <div className={dmStyles.reviewStream}>
+                {dmDrafts.map((draft) => (
+                  <div className={dmStyles.reviewItem} key={`ja-${draft.handle}`}>
                     <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
                     <textarea
                       className={dmStyles.streamTextarea}
@@ -696,7 +701,12 @@ export function DiscoveryConsole() {
                       onChange={(event) => updateDmJapanese(draft.handle, event.target.value)}
                     />
                   </div>
-                  <div className={`${dmStyles.reviewCell} ${dmStyles.translationCell}`}>
+                ))}
+              </div>
+
+              <div className={`${dmStyles.reviewStream} ${dmStyles.translationStream}`}>
+                {dmDrafts.map((draft) => (
+                  <div className={dmStyles.reviewItem} key={`ko-${draft.handle}`}>
                     <div className={dmStyles.translationHead}>
                       <strong className={dmStyles.streamHandle}>@{draft.handle}</strong>
                       <span className={dmStyles.translationPending}>
@@ -705,8 +715,8 @@ export function DiscoveryConsole() {
                     </div>
                     <div className={dmStyles.streamTranslation}>{draft.koreanText}</div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
 
             <div className={dmStyles.footer}>
