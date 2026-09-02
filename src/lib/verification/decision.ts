@@ -73,15 +73,16 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
     return { discoveryStatus: "needs_review", verificationStatus: "insufficient", reason: "최근 Reels 조회수 검증 필요" };
   }
 
+  const followers = input.followers!;
   const priority = classifyFinalPriority({
     category: input.category,
-    followers: input.followers,
+    followers,
     reelAverage: input.reelMetrics.average,
     bio: input.bio,
   });
 
   if (priority === "제외") {
-    const reason = input.followers < 1000
+    const reason = followers < 1000
       ? "제외 · 팔로워 1K 미만"
       : "제외 · 최근 Reels 평균 1K 미만";
     return { discoveryStatus: "hard_reject", verificationStatus: "verified", reason };
