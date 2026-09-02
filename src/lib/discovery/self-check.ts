@@ -138,7 +138,7 @@ export function runQualitySelfCheck() {
     { url: "a8", postedAt: null, views: 610 },
     { url: "a9", postedAt: null, views: 252 },
   ]);
-  check("latest six Reel arithmetic mean is 868 rounded", lowAccountMetrics.average === 868 && lowAccountMetrics.sampleSize === 6 && lowAccountMetrics.totalConsidered === 6 && lowAccountMetrics.status === "ready");
+  check("latest eight Reel arithmetic mean is 822 rounded", lowAccountMetrics.average === 822 && lowAccountMetrics.sampleSize === 8 && lowAccountMetrics.totalConsidered === 8 && lowAccountMetrics.status === "ready");
 
   const lowAccountDecision = decideVerification({
     category: "beauty",
