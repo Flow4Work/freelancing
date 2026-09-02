@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
@@ -19,7 +19,14 @@ export async function launchOpenCodeDmInput(input: {
 
   const promptPath = path.join(root, `dm-${input.contactId}.md`);
   const scriptPath = path.join(root, `dm-${input.contactId}.ps1`);
+  const invokedPath = path.join(root, `dm-${input.contactId}.invoked`);
+  const failedPath = path.join(root, `dm-${input.contactId}.failed`);
   const prompt = buildDmInputPrompt(input);
+
+  await Promise.all([
+    rm(invokedPath, { force: true }),
+    rm(failedPath, { force: true }),
+  ]);
   await writeFile(promptPath, prompt, { encoding: "utf8" });
 
   const script = `$ErrorActionPreference = "Stop"
@@ -31,6 +38,8 @@ try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · DM @${input.handle}
 Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
+$InvokedFile = ${psQuote(invokedPath)}
+$FailedFile = ${psQuote(failedPath)}
 $ContactId = ${psQuote(input.contactId)}
 $Handle = ${psQuote(input.handle)}
 $ResultUrl = "http://localhost:3000/api/dm/opencode-result"
@@ -46,11 +55,13 @@ function Set-DmFailed([string]$Message) {
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
   if (-not (Test-Path -LiteralPath $PromptFile)) { throw "FixUp Scout DM 프롬프트 파일을 찾을 수 없습니다." }
+  if ((Get-Item -LiteralPath $PromptFile).Length -le 0) { throw "FixUp Scout DM 프롬프트가 비어 있습니다." }
 
   Write-Host "[FixUp Scout] @${input.handle} · 승인 DM 입력 준비" -ForegroundColor Cyan
   Write-Host "[FixUp Scout] 전송 버튼은 누르지 않습니다." -ForegroundColor Yellow
   Write-Host ""
 
+  [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
   & $OpenCode run "첨부된 FixUp Scout DM 입력 지시만 실행해. 승인 원문을 입력창에 그대로 넣고 절대 전송하지 마." --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
@@ -67,6 +78,7 @@ try {
     throw ([string]$Contact.contact.openCodeError)
   }
 
+  Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Write-Host ""
   Write-Host "[FixUp Scout] DM 입력 준비 완료 · 전송하지 않음" -ForegroundColor Green
   Read-Host "창을 닫으려면 Enter"
@@ -75,6 +87,7 @@ try {
 catch {
   $Message = $_.Exception.Message
   Set-DmFailed $Message
+  try { [IO.File]::WriteAllText($FailedFile, $Message, $Utf8) } catch {}
   Write-Host ""
   Write-Host "[FixUp Scout] DM 입력 준비 실패: $Message" -ForegroundColor Red
   Write-Host "후보는 Scout에 남아 다시 확인할 수 있습니다." -ForegroundColor Yellow
@@ -108,7 +121,39 @@ catch {
     throw new Error("PowerShell 창은 요청됐지만 실행 PID를 확인하지 못했습니다.");
   }
 
+  await waitForOpenCodeInvocation(invokedPath, failedPath);
+  await rm(invokedPath, { force: true });
   return { command, promptPath, processId };
+}
+
+async function waitForOpenCodeInvocation(invokedPath: string, failedPath: string) {
+  const deadline = Date.now() + 7000;
+  while (Date.now() < deadline) {
+    const failure = await readTextIfPresent(failedPath);
+    if (failure) throw new Error(`OpenCode 실행 실패: ${failure}`);
+
+    const invoked = await readTextIfPresent(invokedPath);
+    if (invoked === "invoked") {
+      await sleep(300);
+      const immediateFailure = await readTextIfPresent(failedPath);
+      if (immediateFailure) throw new Error(`OpenCode 실행 실패: ${immediateFailure}`);
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error("OpenCode 호출 시작을 확인하지 못했습니다.");
+}
+
+async function readTextIfPresent(filePath: string) {
+  try {
+    return (await readFile(filePath, "utf8")).trim();
+  } catch {
+    return "";
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function psQuote(value: string) {
