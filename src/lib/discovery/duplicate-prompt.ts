@@ -23,6 +23,14 @@ export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], cate
 후보, 위에서 아래 순서 그대로:
 ${ids}
 
+가장 중요한 저장 규칙:
+- 후보 1명의 화면 판정이 끝나는 즉시 그 후보 1건만 http://localhost:3000/api/duplicate/results 로 POST한다.
+- 전체 후보를 다 검사한 뒤 한 번에 제출하지 않는다.
+- 한 명 판정 → 즉시 POST → ok:true 확인 → 다음 후보 순서다.
+- Python/py/python3, Temp 파일, 파일 저장, --data-binary @파일경로를 사용하지 않는다.
+- 각 POST 응답의 processedCount/totalCount를 확인한다. POST가 실패하면 다음 후보로 넘어가지 않고 실패 종료한다.
+- 마지막 후보 POST 응답은 completed:true여야 전체 완료다.
+
 실행 규칙:
 1. 중복 페이지를 연다.
 2. 로그인 화면이면 사용자 이름과 비밀번호를 직접 입력해 로그인한다.
@@ -32,11 +40,11 @@ ${ids}
    - @ 없이 ID 입력
    - 중복 확인 클릭
    - 화면 결과 문구 확인
+   - 즉시 해당 후보 1건 POST 및 ok:true 확인
 5. 판정은 3개만 사용한다.
    - 등록 가능 / 登録可能 → available
    - 이미 등록 / 登録済み → duplicate
    - 보호 목록 / 保護リスト → protected
-6. 마지막 후보 판정 직후 전체 결과를 즉시 FixUp Scout에 제출한다.
 
 금지:
 - 후보 재검사
@@ -48,17 +56,17 @@ ${ids}
 - Instagram 열기
 - 결과 추정
 
-제출 형식:
+후보 1명당 제출 형식:
 {"jobId":"${jobId}","category":"${category}","results":[{"handle":"id","duplicateStatus":"available","duplicateMessage":"화면의 실제 결과 문구"}]}
 
-제출은 파일을 만들지 말고 PowerShell 직접 POST만 사용한다.
-예시:
+PowerShell 직접 POST 예시:
 $json = @'
-{"jobId":"${jobId}","category":"${category}","results":[...]}
+{"jobId":"${jobId}","category":"${category}","results":[{"handle":"현재ID","duplicateStatus":"available","duplicateMessage":"실제 문구"}]}
 '@
-$response = Invoke-RestMethod -Uri 'http://localhost:3000/api/duplicate/results' -Method POST -ContentType 'application/json; charset=utf-8' -Body $json
+$response = Invoke-RestMethod -Uri 'http://localhost:3000/api/duplicate/results' -Method POST -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 if ($response.ok -ne $true) { throw 'POST_FAILED' }
+$response | ConvertTo-Json -Depth 5
 
-응답의 ok:true를 확인하면 추가 확인 없이 종료한다.
-로그인 실패, 입력폼 없음, 후보 하나라도 판정 실패, POST 실패 시 저장하지 말고 실패 종료한다.`;
+응답 ok:true 확인 후에만 다음 후보로 간다. 마지막 응답 completed:true 확인 후 추가 작업 없이 종료한다.
+로그인 실패, 입력폼 없음, 후보 하나라도 판정 실패, POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 앞 후보 결과는 Scout에 그대로 보존된다.`;
 }
