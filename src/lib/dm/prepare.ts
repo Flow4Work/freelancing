@@ -12,7 +12,7 @@ const MAX_RETRY_DELAY_MS = 65_000;
 
 const INTERNAL_EVIDENCE_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|followers?|following|平均|평균|\b8\s*\/\s*8\b|\b\d+건\b|순위|順位|verified|qualified|검증|検証|모집조건|条件\s*(?:충족|通過)?|중복|重複|후보|候補|판정|判定|공개.?개인|개인\s*계정|최근\s*게시일|null|log\s*in|sign\s*up|photo\s*by|video\s*by|show\s*more|highlight\s*story|read\s*more)/i;
 const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|フォロワ|followers?|平均|평균|8\s*\/\s*8|8件|順位|verified|qualified|検証|검증|条件|모집조건|重複|중복|候補|후보|判定|판정)/i;
-const FORBIDDEN_PERSONALIZATION_PATTERN = /(?:経歴を拝見|姿を拝見|日韓夫婦美容室|惹かれ|関心が近いと感じ|関心が近い|魅力を感じ|興味を持ち)/i;
+const FORBIDDEN_PERSONALIZATION_PATTERN = /(?:経歴|姿を拝見|日韓夫婦美容室|惹かれ|関心が近いと感じ|関心が近い|魅力を感じ|興味を持ち|点に注目|資格を活かした発信|薬局での肌管理|発信されているの拝見|年間にわたる韓国好きの発信)/i;
 
 type PersonalizationBasis = {
   source: string;
@@ -176,20 +176,23 @@ async function generatePersonalizationLine(
   const styleHint = personalizationStyleHint(handle);
   const prompt = [
     "다음 확인된 공개 프로필/콘텐츠 근거만 사용해 Instagram 첫 DM의 개인화 부분을 자연스러운 일본어 1문장으로 작성한다.",
-    "가장 중요한 우선순위는 사실 정확성이다. 제안 장르와의 관련성보다 원본 근거에 실제로 적힌 사실을 정확하게 표현하는 것이 우선이다.",
+    "우선순위는 반드시 사실 정확성 > 자연스러움 > 문형 다양성 순서다. 다양성을 위해 원본 의미를 바꾸지 않는다.",
     "개인화와 뒤에 이어질 PR 제안 장르는 완전히 분리한다. 미용 PR을 제안한다고 해서 개인화 문장을 미용 내용으로 맞추거나 바꾸지 않는다.",
+    "BIO에서 ｜ / ・ / 쉼표 등으로 나열된 사실 A와 사실 B는 원문 문법상 직접 연결되어 있지 않으면 서로 독립된 사실로 취급한다. 둘을 합쳐 새로운 관계를 만들지 않는다.",
+    "예: 『薬局』『肌管理』가 따로 나열됐다고 『薬局での肌管理』로 만들지 않는다. 『資格所持』『発信』이 따로 있다고 『資格を活かした発信』으로 만들지 않는다.",
+    "기간 표현은 원본에서 실제로 수식하는 대상을 그대로 보존한다. 예: 『韓国好き15年』은 한국을 좋아한 기간이지, 15년간 발신했다는 뜻이 아니다.",
     "원본 근거의 의미나 분야를 다른 분야로 변환하지 않는다. 예: コーデ를肌管理로 바꾸거나, 일반적인韓国発信을美容発信으로 바꾸지 않는다.",
-    "근거에 없는 관심, 호감, 공감, 전문성, 평가를 추가하지 않는다. 『関心が近いと感じて』『惹かれ』『魅力を感じて』 같은 우리 측 감정 표현을 쓰지 않는다.",
+    "근거에 없는 관심, 호감, 공감, 전문성, 평가, 인과관계를 추가하지 않는다. 『関心が近いと感じて』『惹かれ』『魅力を感じて』『資格を活かして』 같은 표현을 만들지 않는다.",
     "Reels/리일/재생수/조회수/팔로워/평균/표본 수/순위/검증 상태/조건 충족/중복 확인/후보 상태/내부 판정은 입력에 있더라도 절대 언급하지 않는다.",
-    "상대의 가장 강하고 구체적인 사실 1개를 우선 사용한다. 정말 자연스럽게 연결되는 경우에만 2개까지 사용한다.",
-    "월별 한국 방문, 장기간의 한국 관련 활동, 실제 직업/역할/근무, 구체적인 BIO 사실은 generic한 『美容』『コスメ』 한 단어보다 우선한다.",
-    "한국 관련 사실 하나만 강하게 확인돼도 그것만 사용해도 된다. 미용 근거가 약하면 미용을 새로 만들지 않는다.",
-    "BIO 문구를 그대로 이어 붙이지 말고 사실의 의미는 유지한 채 일본인이 실제 첫 DM에서 쓸 자연스러운 표현으로 다시 쓴다.",
-    "『経歴を拝見し』『姿を拝見し』『日韓夫婦美容室』처럼 인위적이거나 한국어식 명사 결합은 쓰지 않는다.",
+    "사실이 여러 개여도 가장 자연스럽고 구체적인 사실 1개를 우선 사용한다. 정말 원문에서 직접 연결된 경우에만 2개까지 사용한다.",
+    "월별 한국 방문, 장기간의 한국 관련 활동, 실제 직업/역할/근무, 구체적인 BIO 사실은 generic한 단어 하나보다 우선한다.",
+    "BIO 문구를 그대로 이어 붙이지 말고 사실의 의미와 수식 관계는 그대로 보존한 채 일본인이 실제 첫 DM에서 쓸 자연스러운 표현으로 다시 쓴다.",
+    "『経歴』『経歴を拝見し』『姿を拝見し』『〜点に注目して』『日韓夫婦美容室』처럼 분석 보고서/채용 문구 또는 한국어식 명사 결합은 쓰지 않는다.",
     "과한 칭찬은 하지 않는다.",
-    "8명 모두 같은 『〜に関する発信を拝見し、ご連絡しました。』 문형으로 획일화하지 않는다.",
-    `이번 후보의 문형 힌트: ${styleHint}`,
-    "문형 힌트는 자연스러울 때만 사용하고, 원본 근거와 충돌하면 반드시 원본 근거를 우선한다.",
+    "최종 출력 직전에 스스로 한 번 점검한다: 원본에 없는 관계나 인과가 생기지 않았는지, 기간의 수식 대상이 바뀌지 않았는지, 일본어 조사와 문법이 자연스러운지 확인한다.",
+    "특히 『発信されているのを拝見し』처럼 필요한 조사를 정확히 쓰고 『発信されているの拝見し』 같은 조사 누락은 절대 출력하지 않는다.",
+    `이번 후보의 기존 문형 힌트: ${styleHint}`,
+    "문형 힌트는 기존 분산을 유지하기 위한 참고일 뿐이다. 사실 정확성이나 자연스러움과 충돌하면 반드시 사실 정확성을 우선한다.",
     "설명, 따옴표, 번호, 번역, 줄바꿈 없이 일본어 한 문장만 반환한다.",
     `근거 종류: ${basis.source}`,
     `확인된 원본 근거: ${basis.text}`,
@@ -270,7 +273,7 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
       temperature: 0.3,
       max_tokens: 120,
       messages: [
-        { role: "system", content: "You write one concise factual Japanese Instagram personalization sentence. Factual faithfulness to supplied evidence is more important than matching the PR category." },
+        { role: "system", content: "Write one concise natural Japanese Instagram personalization sentence using only the supplied evidence. Preserve factual scope, modifiers, duration, and relationships exactly. Before answering, silently check Japanese particles and grammar." },
         { role: "user", content: prompt },
       ],
     }),
@@ -433,7 +436,10 @@ function buildCorrectionPrompt(originalPrompt: string, error: DmLineValidationEr
     `검증 사유: ${error.code}`,
     blocked,
     "위 표현 또는 문제를 사용하지 말고, 같은 확인 근거 범위 안에서 자연스러운 일본어 한 문장으로 다시 작성한다.",
+    "서로 독립된 BIO 항목을 새 관계로 결합하지 않는다. 원본에 없는 인과관계나 활동을 만들지 않는다.",
+    "기간 표현이 무엇을 수식하는지 원본 그대로 유지한다. 예: 韓国好き15年을 15年間の発信으로 바꾸지 않는다.",
     "원본 근거의 분야를 바꾸거나 새로운 관심/호감/전문성을 만들지 않는다.",
+    "최종 출력 전에 조사와 일본어 문법을 다시 확인한다.",
     "새 사실을 추가하지 말고, 내부 조회수/팔로워/Reels/검증/후보 정보는 절대 넣지 않는다.",
     "설명 없이 교정된 일본어 한 문장만 반환한다.",
   ].join("\n");
