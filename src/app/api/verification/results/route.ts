@@ -25,7 +25,7 @@ const resultSchema = z.object({
   japaneseTarget: z.boolean().nullable(),
   koreaConnection: z.boolean().nullable(),
   categoryRelevant: z.boolean().nullable(),
-  reels: z.array(reelSchema).max(10),
+  reels: z.array(reelSchema).max(6),
   note: z.string().max(500).nullable(),
 });
 
