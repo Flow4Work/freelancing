@@ -42,7 +42,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   if (contactedError) throw new Error(`컨택 이력 확인 실패: ${contactedError.message}`);
 
   const allowed = new Set((candidates ?? []).map((row) => String(row.normalized_handle)));
-  const existingFollowers = new Map((candidates ?? []).map((row) => [
+  const existingFollowers = new Map<string, number | null>((candidates ?? []).map((row): [string, number | null] => [
     String(row.normalized_handle),
     typeof row.followers === "number" && Number.isFinite(row.followers) ? row.followers : null,
   ]));
