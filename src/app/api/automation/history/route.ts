@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
+type JobStatus = "pending" | "completed" | "failed";
 type Destination = "검증 필요" | "추천 후보" | "중복 통과" | "최종 검증 완료" | "DM 준비" | "제외" | "미반영";
 type Group = { destination: Destination; handles: string[]; reasons: Array<{ handle: string; reason: string }> };
 
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
 
     const { data: jobs, error: jobsError } = await supabase
       .from("creator_verification_jobs")
-      .select("id, handles, status, created_at, completed_at, job_kind, result_summary")
+      .select("id, handles, processed_handles, status, created_at, completed_at, failed_at, failure_message, job_kind, result_summary")
       .eq("category", category)
       .order("created_at", { ascending: false })
       .limit(12);
@@ -45,16 +46,37 @@ export async function GET(request: Request) {
 
     const items = (jobs ?? []).map((job) => {
       const handles = normalizeHandles(job.handles);
+      const processedHandles = normalizeHandles(job.processed_handles);
+      const processedSet = new Set(processedHandles);
+      const remaining = handles.filter((handle) => !processedSet.has(handle));
+      const status = normalizeStatus(job.status);
       const snapshot = normalizeSnapshot(job.result_summary);
-      const groups = snapshot ?? buildCurrentGroups(handles, candidateMap);
+      const groups = snapshot
+        ?? (status === "completed"
+          ? buildCurrentGroups(handles, candidateMap)
+          : status === "failed"
+            ? [
+                ...buildCurrentGroups(processedHandles, candidateMap),
+                ...(remaining.length
+                  ? [{
+                      destination: "미반영" as const,
+                      handles: remaining,
+                      reasons: remaining.map((handle) => ({ handle, reason: "작업 중단 전 미처리" })),
+                    }]
+                  : []),
+              ]
+            : buildCurrentGroups(processedHandles, candidateMap));
 
       return {
         id: String(job.id),
         mode: job.job_kind === "duplicate" ? "duplicate" : "instagram",
-        status: job.status === "completed" ? "completed" : "pending",
+        status,
         candidateCount: handles.length,
+        processedCount: processedHandles.length,
         createdAt: String(job.created_at),
         completedAt: job.completed_at ? String(job.completed_at) : null,
+        failedAt: job.failed_at ? String(job.failed_at) : null,
+        failureMessage: job.failure_message ? String(job.failure_message) : null,
         groups,
         exactSnapshot: Boolean(snapshot),
       };
@@ -137,6 +159,11 @@ function normalizeSnapshot(value: unknown): Group[] | null {
   });
 
   return groups.length ? groups : null;
+}
+
+function normalizeStatus(value: unknown): JobStatus {
+  if (value === "completed" || value === "failed") return value;
+  return "pending";
 }
 
 function normalizeHandles(value: unknown) {
