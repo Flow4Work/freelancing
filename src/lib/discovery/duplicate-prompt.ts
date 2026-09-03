@@ -5,6 +5,7 @@ export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], cate
   const candidateRows = candidates.map((candidate) => JSON.stringify({
     handle: candidate.handle,
     followers: candidate.followers,
+    followersSource: candidate.followersSource,
   })).join("\n");
   const loginId = process.env.FIXUP_DUPLICATE_LOGIN_ID?.trim();
   const loginPassword = process.env.FIXUP_DUPLICATE_LOGIN_PASSWORD?.trim();
@@ -47,14 +48,17 @@ ${candidateRows}
    - 등록 가능 / 登録可能 → available
    - 이미 등록 / 登録済み → duplicate
    - 보호 목록 / 保護リスト → protected
+6. duplicate 또는 protected가 확인되면 그 후보는 즉시 POST하고 종료한다. Instagram을 열지 않고 다음 후보로 넘어간다.
 
-followers 보강 규칙:
-- 후보 JSON의 followers가 숫자로 이미 있으면 그 값을 그대로 보존한다. Instagram을 추가로 열지 않는다.
-- followers가 null이고 중복 판정이 available인 경우에만 https://www.instagram.com/{handle}/ 프로필을 열어 현재 화면의 팔로워 수를 확인한다.
-- followers가 null이어도 duplicate/protected/unknown이면 Instagram을 절대 열지 않는다.
-- 현재 팔로워 수를 실제 화면에서 확인한 경우에만 정수 followers로 제출한다.
+followers 확인 규칙:
+- followersSource가 "instagram"이고 followers가 숫자면 이미 Instagram에서 확인된 정확값이다. 다시 Instagram을 열지 않는다.
+- followersSource가 "search"인 숫자는 Exa/Tavily 검색 결과의 참고값일 뿐 정확값이 아니다. 자동 제외 판단에 사용하지 않는다.
+- 중복 판정이 available이고, followersSource가 "search"이거나 followers가 null인 경우에만 https://www.instagram.com/{handle}/ 프로필을 열어 현재 팔로워 수를 확인한다.
+- duplicate/protected/unknown이면 followers가 없거나 검색 참고값뿐이어도 Instagram을 절대 열지 않는다.
+- 현재 팔로워 수를 실제 Instagram 화면에서 확인한 경우에만 정수 followers로 제출한다.
 - 숫자를 확인하지 못하면 추정하거나 0으로 만들지 말고 followers:null로 제출한다.
-- 팔로워 보강을 위해 Instagram을 열었더라도 BIO, Reels, 게시물, DM 등 다른 검증은 하지 않는다. 이 단계의 추가 조사는 팔로워 수 확인까지만이다.
+- Instagram에서 정확한 followers가 100000 이상으로 확인되면 그 숫자만 즉시 POST한다. BIO, Reels, 게시물, DM 등은 보지 않고 그 후보를 종료한다.
+- Instagram에서 정확한 followers가 100000 미만으로 확인되어도 이 단계의 추가 조사는 팔로워 수 확인까지만이다.
 
 금지:
 - 후보 재검사
@@ -63,13 +67,15 @@ followers 보강 규칙:
 - playwright_b_browser_run_code_unsafe 사용
 - Temp 파일 생성, cat, 파일 저장 후 --data-binary @파일경로 사용
 - "등록하기 / 登録する" 클릭
-- available + followers:null 조건 외 Instagram 열기
-- 팔로워 외 Instagram 추가 조사
+- duplicate/protected/unknown 후보의 Instagram 열기
+- followersSource="instagram"인 후보의 Instagram 재확인
+- 팔로워 외 Instagram BIO/Reels/게시물/DM 추가 조사
+- 검색 참고 followers만으로 100000 이상 제외 판정
 - 결과/숫자 추정
 
 후보 1명당 제출 형식:
 {"jobId":"${jobId}","category":"${category}","results":[{"handle":"id","duplicateStatus":"available","duplicateMessage":"화면의 실제 결과 문구","followers":12345}]}
-followers를 확인하지 못했거나 기존 값이 이미 있는 경우에는 followers:null 또는 필드 생략이 가능하다. 서버는 기존 followers를 보존한다.
+Instagram에서 새로 정확한 followers를 확인하지 않았으면 followers:null 또는 필드 생략이 가능하다. 서버는 기존 정확값 또는 검색 참고값을 구분해 보존한다.
 
 PowerShell 직접 POST 예시:
 $json = @'
