@@ -1163,7 +1163,7 @@ function CandidateTable({
                       onClick={() => onDelete(candidate.handle)}
                       disabled={Boolean(deletingHandle)}
                       style={{ padding: "5px 8px", fontSize: 11, whiteSpace: "nowrap" }}
-                    >{deletingCandidateHandle === candidate.handle ? "처리 중" : "삭제"}</button>
+                    >{deletingHandle === candidate.handle ? "처리 중" : "삭제"}</button>
                   </td>
                 )}
               </tr>
