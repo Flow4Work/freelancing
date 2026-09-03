@@ -63,9 +63,27 @@ function Get-ProviderName([string]$Model) {
     return $Model.Substring(0, $Slash).ToLowerInvariant()
 }
 
+function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
+    $Parts = New-Object 'System.Collections.Generic.List[string]'
+
+    if (-not [string]::IsNullOrWhiteSpace($StderrText)) {
+        [void]$Parts.Add($StderrText)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($StdoutText)) {
+        foreach ($Line in ($StdoutText -split "`r?`n")) {
+            if ($Line -match '"type"\s*:\s*"error"') {
+                [void]$Parts.Add($Line)
+            }
+        }
+    }
+
+    return ($Parts -join [Environment]::NewLine)
+}
+
 function Test-OpenCodeFreeQuota([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(FreeUsageLimitError|Free usage exceeded|Free limit reached|subscribe to Go|add credits https://opencode\.ai/(?:go|zen)|\b429\b.{0,120}rate limit|rate limit exceeded.{0,80}try again later)'
+    return $Text -match '(?i)(FreeUsageLimitError|free_tier_limit|Free usage exceeded|Free limit reached|subscribe to Go|add credits https://opencode\.ai/(?:go|zen))'
 }
 
 function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
@@ -84,12 +102,34 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
 
 function Test-ProviderUnavailable([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(\b50[0234]\b|service unavailable|temporarily unavailable|provider unavailable|endpoint is unavailable|upstream request failed|resource[_ -]?exhausted|worker local total request limit reached|overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection (?:reset|refused|lost)|serialization (?:failure|error)|response.{0,100}missing required.{0,40}\bid\b|stream.{0,100}(?:closed|ended).{0,50}finish_reason|unknown variant.{0,50}finish)'
+    return $Text -match '(?i)(\b50[0234]\b|service unavailable|temporarily unavailable|provider unavailable|endpoint is unavailable|upstream request failed|worker local total request limit reached|overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection (?:reset|refused|lost)|serialization (?:failure|error)|response.{0,100}missing required.{0,40}\bid\b|stream.{0,100}(?:closed|ended).{0,50}finish_reason|unknown variant.{0,50}finish)'
 }
 
-function Test-SemanticProgress([string]$Text) {
-    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?im)^\s*\{.*"type"\s*:\s*"(?:tool_use|text)".*\}\s*$'
+function Test-SemanticProgress([string]$StdoutText) {
+    if ([string]::IsNullOrWhiteSpace($StdoutText)) { return $false }
+    return $StdoutText -match '(?i)"type"\s*:\s*"(?:step_start|step_finish|tool_use|text)"'
+}
+
+function Write-FilteredOpenCodeOutput([string]$StdoutText, [string]$StderrText) {
+    if (-not [string]::IsNullOrWhiteSpace($StdoutText)) {
+        $ProgressTypes = [regex]::Matches(
+            $StdoutText,
+            '(?i)"type"\s*:\s*"(step_start|step_finish|tool_use|text)"'
+        )
+        foreach ($Match in $ProgressTypes) {
+            [Console]::Out.WriteLine("[FixUp OpenCode] progress=$($Match.Groups[1].Value.ToLowerInvariant())")
+        }
+
+        foreach ($Line in ($StdoutText -split "`r?`n")) {
+            if ($Line -match '"type"\s*:\s*"error"') {
+                [Console]::Error.WriteLine($Line)
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrEmpty($StderrText)) {
+        [Console]::Error.Write($StderrText)
+    }
 }
 
 $Root = Join-Path $env:TEMP 'fixup-scout'
@@ -169,6 +209,11 @@ if (-not $IsRun) {
     exit $Code
 }
 
+$HasAutoApproval = ($Arguments -contains '--auto') -or ($Arguments -contains '--yolo') -or ($Arguments -contains '--dangerously-skip-permissions')
+if (-not $HasAutoApproval) {
+    $Arguments += '--auto'
+}
+
 $HasFormat = $false
 for ($i = 0; $i -lt $Arguments.Count; $i++) {
     $ArgumentText = [string]$Arguments[$i]
@@ -224,37 +269,32 @@ try {
         $StdoutOffset = [long]$OutDelta.Length
         $StderrOffset = [long]$ErrDelta.Length
 
-        $Combined = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
+        $SignalText = Get-OpenCodeErrorSignal ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
 
-        if ($IsPrimary -and (Test-OpenCodeFreeQuota $Combined)) {
+        if ($IsPrimary -and (Test-OpenCodeFreeQuota $SignalText)) {
             Stop-OwnChildTree $Child.Id
-            [Console]::Error.WriteLine('Free usage exceeded: primary model quota/rate limit exhausted.')
+            [Console]::Error.WriteLine('Free usage exceeded: primary model free quota exhausted.')
             exit 173
         }
 
-        if (Test-ProviderBillingQuota $Provider $Combined) {
+        if (Test-ProviderBillingQuota $Provider $SignalText) {
             Set-ProviderCircuit $Provider
             Stop-OwnChildTree $Child.Id
             [Console]::Error.WriteLine("Quota exceeded: provider credits exhausted for $Provider.")
             exit 174
         }
 
-        if (Test-ProviderUnavailable $Combined) {
+        if (Test-ProviderUnavailable $SignalText) {
             Stop-OwnChildTree $Child.Id
             [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
             exit 175
         }
 
-        if (Test-SemanticProgress $Combined) {
+        if (Test-SemanticProgress ([string]$OutDelta.Text)) {
             $LastSemanticAt = [DateTime]::UtcNow
         }
 
-        if (-not [string]::IsNullOrEmpty([string]$OutDelta.Text)) {
-            [Console]::Out.Write([string]$OutDelta.Text)
-        }
-        if (-not [string]::IsNullOrEmpty([string]$ErrDelta.Text)) {
-            [Console]::Error.Write([string]$ErrDelta.Text)
-        }
+        Write-FilteredOpenCodeOutput ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
 
         if (([DateTime]::UtcNow - $LastSemanticAt).TotalSeconds -ge $SemanticStallSeconds) {
             Stop-OwnChildTree $Child.Id
@@ -267,30 +307,25 @@ try {
 
     $OutDelta = Get-NewText $StdoutFile $StdoutOffset
     $ErrDelta = Get-NewText $StderrFile $StderrOffset
-    $Tail = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
+    $SignalText = Get-OpenCodeErrorSignal ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
 
-    if ($IsPrimary -and (Test-OpenCodeFreeQuota $Tail)) {
-        [Console]::Error.WriteLine('Free usage exceeded: primary model quota/rate limit exhausted.')
+    if ($IsPrimary -and (Test-OpenCodeFreeQuota $SignalText)) {
+        [Console]::Error.WriteLine('Free usage exceeded: primary model free quota exhausted.')
         exit 173
     }
 
-    if (Test-ProviderBillingQuota $Provider $Tail) {
+    if (Test-ProviderBillingQuota $Provider $SignalText) {
         Set-ProviderCircuit $Provider
         [Console]::Error.WriteLine("Quota exceeded: provider credits exhausted for $Provider.")
         exit 174
     }
 
-    if (Test-ProviderUnavailable $Tail) {
+    if (Test-ProviderUnavailable $SignalText) {
         [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
         exit 175
     }
 
-    if (-not [string]::IsNullOrEmpty([string]$OutDelta.Text)) {
-        [Console]::Out.Write([string]$OutDelta.Text)
-    }
-    if (-not [string]::IsNullOrEmpty([string]$ErrDelta.Text)) {
-        [Console]::Error.Write([string]$ErrDelta.Text)
-    }
+    Write-FilteredOpenCodeOutput ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
 
     $ExitCode = 1
     try { $ExitCode = [int]$Child.ExitCode } catch {}
