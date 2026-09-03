@@ -42,6 +42,7 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
 
   // Instagram 원본에는 프로필 존재 여부만 가볍게 확인한다.
   // BIO/팔로워/Reels는 이 단계에서 열지 않고, 접근 실패는 없는 계정으로 단정하지 않는다.
+  // 단, Exa/Tavily 검색 결과에 팔로워 수가 명시된 경우에는 선택 참고값으로만 보존한다.
   const candidates = await groupedToCandidates(freshGrouped, category);
   const enriched = await mergeWithStoredReviewEvidence(candidates, category);
   const rejected = enriched.filter((candidate) => candidate.candidateStatus === "hard_reject");
@@ -118,6 +119,7 @@ async function groupedToCandidates(grouped: Map<string, ExtractedEvidence[]>, ca
     const combinedText = joinEvidence(evidence.map((item) => `${item.result.title}\n${item.result.text}`), 2400);
     const profileText = joinEvidence(profileEvidence.map((item) => `${item.result.title}\n${item.result.text}`), 1600);
     const accountAvailability = availability.get(handle) ?? "unknown";
+    const followers = extractFollowerReference(profileEvidence.length ? profileEvidence : evidence);
 
     const assessment = assessCandidate({
       handle,
@@ -158,7 +160,8 @@ async function groupedToCandidates(grouped: Map<string, ExtractedEvidence[]>, ca
       duplicateCheckMessage: null,
       duplicateCheckedAt: null,
       bio: null,
-      followers: null,
+      followers,
+      followersSource: followers === null ? null : "search",
       reelAverage: null,
       reelMedian: null,
       reelSampleSize: null,
@@ -175,6 +178,46 @@ async function groupedToCandidates(grouped: Map<string, ExtractedEvidence[]>, ca
   }
 
   return candidates;
+}
+
+function extractFollowerReference(evidence: ExtractedEvidence[]) {
+  for (const item of evidence) {
+    const value = extractFollowerCount(`${item.result.title}\n${item.result.text}`);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function extractFollowerCount(value: string) {
+  const text = cleanText(value);
+  const amount = "(\\d{1,3}(?:[,.]\\d{3})+|\\d+(?:[.,]\\d+)?)\\s*(万|[kKmM])?";
+  const label = "(?:followers?|フォロワー(?:数)?)";
+  const patterns = [
+    new RegExp(`${label}\\s*[:：·\\-]?\\s*${amount}(?:\\s*(?:人|名))?`, "i"),
+    new RegExp(`${amount}(?:\\s*(?:人|名))?\\s*${label}`, "i"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const parsed = parseFollowerAmount(match[1], match[2] ?? "");
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function parseFollowerAmount(rawNumber: string, rawUnit: string) {
+  const unit = rawUnit.toLowerCase();
+  let normalizedNumber = rawNumber;
+  if (unit && /^\d+,\d{1,2}$/.test(rawNumber)) normalizedNumber = rawNumber.replace(",", ".");
+  else normalizedNumber = rawNumber.replace(/,/g, "");
+
+  const number = Number(normalizedNumber);
+  if (!Number.isFinite(number) || number < 0) return null;
+
+  const multiplier = rawUnit === "万" ? 10_000 : unit === "k" ? 1_000 : unit === "m" ? 1_000_000 : 1;
+  const followers = Math.round(number * multiplier);
+  return Number.isSafeInteger(followers) && followers <= 2_000_000_000 ? followers : null;
 }
 
 function joinEvidence(values: string[], maxLength: number) {
