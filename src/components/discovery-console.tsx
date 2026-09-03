@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { getCandidateViewState, getSearchStageViewState, type CandidateViewState } from "@/lib/discovery/presentation";
 import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
 import { buildDmBatchInputPrompt } from "@/lib/dm/opencode-prompt";
@@ -69,6 +70,11 @@ type DmContactsResponse = {
   koreanText?: string;
   processId?: number;
   candidateCount?: number;
+  requestedCount?: number;
+  contactCount?: number;
+  launcherCount?: number;
+  promptCount?: number;
+  openCodeRunCount?: number;
   error?: string;
 };
 
@@ -106,6 +112,14 @@ type BulkDmParseResult =
   | { ok: true; messages: Map<string, string> }
   | { ok: false; error: string };
 
+type StoredDmSession = {
+  version: 1;
+  category: SearchCategory;
+  drafts: DmDraft[];
+  bulkJapaneseText: string;
+  reviewStep: DmReviewStep;
+};
+
 const PROGRESS_STAGES = [
   "새 검색 lane 실행 중",
   "Instagram URL 정리 중",
@@ -120,6 +134,7 @@ const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" 
 const ACTION_SLOT_WIDTH = 118;
 const AUTOMATION_WATCH_MS = 3 * 60 * 60 * 1000;
 const BULK_APPROVAL_HANDLE = "__all__";
+const DM_SESSION_KEY_PREFIX = "fixup-scout:dm-session:v1:";
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -134,6 +149,7 @@ export function DiscoveryConsole() {
   const [dmTranslatingHandle, setDmTranslatingHandle] = useState<string | null>(null);
   const [dmApprovingHandle, setDmApprovingHandle] = useState<string | null>(null);
   const [dmDrafts, setDmDrafts] = useState<DmDraft[]>([]);
+  const [dmDraftCategory, setDmDraftCategory] = useState<SearchCategory | null>(null);
   const [dmBulkJapaneseText, setDmBulkJapaneseText] = useState("");
   const [dmReviewStep, setDmReviewStep] = useState<DmReviewStep>("edit");
   const [dmParseError, setDmParseError] = useState<string | null>(null);
@@ -168,9 +184,17 @@ export function DiscoveryConsole() {
     setHistoryOpen(false);
     setHistoryItems([]);
     setExpandedHistoryId(null);
-    setDmDrafts([]);
-    setDmBulkJapaneseText("");
-    setDmReviewStep("edit");
+    const restoredDmSession = readDmSession(category);
+    if (restoredDmSession) {
+      setDmDrafts(restoredDmSession.drafts);
+      setDmBulkJapaneseText(restoredDmSession.bulkJapaneseText);
+      setDmReviewStep(restoredDmSession.reviewStep);
+    } else {
+      setDmDrafts([]);
+      setDmBulkJapaneseText("");
+      setDmReviewStep("edit");
+    }
+    setDmDraftCategory(category);
     setDmParseError(null);
     setDmModalOpen(false);
     setSelectedVerificationHandles(new Set());
@@ -211,6 +235,27 @@ export function DiscoveryConsole() {
 
     return () => { cancelled = true; };
   }, [category]);
+
+  useEffect(() => {
+    if (dmDraftCategory !== category) return;
+    const key = dmSessionKey(category);
+    try {
+      if (!dmDrafts.length) {
+        window.sessionStorage.removeItem(key);
+        return;
+      }
+      const stored: StoredDmSession = {
+        version: 1,
+        category,
+        drafts: dmDrafts,
+        bulkJapaneseText: dmBulkJapaneseText,
+        reviewStep: dmReviewStep,
+      };
+      window.sessionStorage.setItem(key, JSON.stringify(stored));
+    } catch {
+      // sessionStorage를 사용할 수 없어도 현재 페이지의 DM 작업은 유지한다.
+    }
+  }, [category, dmBulkJapaneseText, dmDraftCategory, dmDrafts, dmReviewStep]);
 
   useEffect(() => {
     if (!dmContacts.some((contact) => contact.openCodeStatus === "pending")) return;
@@ -289,6 +334,7 @@ export function DiscoveryConsole() {
   const finalVerificationTotal = candidates.filter((candidate) => candidateState(candidate) === "final_verification").length;
   const sendReadyContacts = dmContacts.filter((contact) => contact.openCodeStatus === "success" && !contact.sentAt);
   const excludedTotal = candidates.length - visibleCandidates.length;
+  const pendingDmDrafts = dmDrafts.filter((draft) => !draft.approved);
 
   const action = statusFilter === "verification_needed" || statusFilter === "recommended"
     ? { mode: "duplicate" as const, label: "중복 확인 실행" }
@@ -481,10 +527,22 @@ export function DiscoveryConsole() {
     }
   }
 
-  async function runDmPrepare(targetHandles?: string[]) {
+  async function runDmPrepare(targetHandles?: string[], forceRegenerate = false) {
+    if (!targetHandles && !forceRegenerate && dmDraftCategory === category && dmDrafts.length) {
+      setDmModalOpen(true);
+      setToast({ kind: "success", message: `기존 DM 초안 ${dmDrafts.length}명 다시 열기 · LLM 재생성 없음` });
+      return;
+    }
+
     const handles = targetHandles ?? filteredCandidates.slice(0, 30).map((candidate) => candidate.handle);
     if (!handles.length) {
       setToast({ kind: "error", message: "DM을 준비할 최종 검증 완료 후보가 없습니다." });
+      return;
+    }
+
+    const invalidHandle = handles.find((handle) => handle !== normalizeHandle(handle) || !isValidHandle(handle) || handle.includes("\\"));
+    if (invalidHandle) {
+      setToast({ kind: "error", message: `실제 Instagram handle이 올바르지 않습니다: ${JSON.stringify(invalidHandle)}` });
       return;
     }
 
@@ -504,6 +562,12 @@ export function DiscoveryConsole() {
       const items = payload.items ?? [];
       if (!items.length) throw new Error("생성된 DM 초안을 받지 못했습니다.");
 
+      const invalidPreparedHandle = items.find((item) => item.handle !== normalizeHandle(item.handle) || !isValidHandle(item.handle) || item.handle.includes("\\"));
+      if (invalidPreparedHandle) {
+        throw new Error(`DM 준비 결과 handle이 올바르지 않습니다: ${JSON.stringify(invalidPreparedHandle.handle)}`);
+      }
+
+      setDmDraftCategory(category);
       if (singleHandle) {
         const replacement = items[0];
         setDmDrafts((current) => {
@@ -532,7 +596,7 @@ export function DiscoveryConsole() {
       ].filter(Boolean).join(" · ");
       setToast({
         kind: "success",
-        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `DM 준비 ${payload.preparedCount ?? items.length}명 완료`}${details ? ` · ${details}` : ""}`,
+        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `${forceRegenerate ? "DM 다시 생성" : "DM 준비"} ${payload.preparedCount ?? items.length}명 완료`}${details ? ` · ${details}` : ""}`,
       });
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 준비 실패" });
@@ -540,6 +604,12 @@ export function DiscoveryConsole() {
       setDmLoading(false);
       setDmRegeneratingHandle(null);
     }
+  }
+
+  async function regenerateDmBatch() {
+    if (!dmDrafts.length || dmLoading || dmReviewPreparing || dmApprovingHandle) return;
+    if (!window.confirm(`현재 DM 초안 ${dmDrafts.length}명을 실제로 다시 생성할까요? Groq/Scaleway를 다시 호출합니다.`)) return;
+    await runDmPrepare(undefined, true);
   }
 
   async function requestDmTranslation(japaneseText: string) {
@@ -615,6 +685,20 @@ export function DiscoveryConsole() {
     const pending = dmDrafts.filter((draft) => !draft.approved);
     if (!pending.length) return;
 
+    const invalidHandle = pending.find((draft) => (
+      draft.handle !== normalizeHandle(draft.handle)
+      || !isValidHandle(draft.handle)
+      || draft.handle.includes("\\")
+    ));
+    if (invalidHandle) {
+      setToast({ kind: "error", message: `실제 Instagram handle이 올바르지 않습니다: ${JSON.stringify(invalidHandle.handle)}` });
+      return;
+    }
+    if (new Set(pending.map((draft) => draft.handle)).size !== pending.length) {
+      setToast({ kind: "error", message: "DM batch에 중복 Instagram handle이 있습니다." });
+      return;
+    }
+
     const emptyJapanese = pending.find((draft) => !draft.japaneseText.trim());
     if (emptyJapanese) {
       setToast({ kind: "error", message: `@${emptyJapanese.handle} 일본어 DM 원문이 비어 있습니다.` });
@@ -631,6 +715,13 @@ export function DiscoveryConsole() {
       return;
     }
 
+    const approvalItems = pending.map((draft) => ({
+      handle: draft.handle,
+      japaneseText: draft.japaneseText,
+      koreanText: draft.koreanText,
+    }));
+    const expectedCount = approvalItems.length;
+
     setDmApprovingHandle(BULK_APPROVAL_HANDLE);
     setToast(null);
 
@@ -638,22 +729,32 @@ export function DiscoveryConsole() {
       const response = await fetch("/api/dm/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category,
-          items: pending.map((draft) => ({
-            handle: draft.handle,
-            japaneseText: draft.japaneseText,
-            koreanText: draft.koreanText,
-          })),
-        }),
+        body: JSON.stringify({ category, items: approvalItems }),
       });
       const payload = await response.json() as DmContactsResponse;
       const contacts = payload.contacts ?? [];
-      if (!response.ok || !payload.ok || contacts.length !== pending.length) {
-        throw new Error(payload.error ?? `DM batch 전송 준비 실패: ${contacts.length}/${pending.length}명 승인`);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? `DM batch 전송 준비 실패: ${contacts.length}/${expectedCount}명 승인`);
+      }
+      if (
+        contacts.length !== expectedCount
+        || payload.requestedCount !== expectedCount
+        || payload.contactCount !== expectedCount
+        || payload.candidateCount !== expectedCount
+        || payload.launcherCount !== expectedCount
+        || payload.promptCount !== expectedCount
+        || payload.openCodeRunCount !== 1
+      ) {
+        throw new Error(
+          `DM batch 수량 불일치: 화면 ${expectedCount} / 승인 ${contacts.length} / 요청 ${payload.requestedCount ?? "?"} / launcher ${payload.launcherCount ?? "?"} / prompt ${payload.promptCount ?? "?"} / OpenCode ${payload.openCodeRunCount ?? "?"}회`,
+        );
       }
 
       const contactByHandle = new Map(contacts.map((contact) => [contact.handle, contact]));
+      if (contactByHandle.size !== expectedCount || pending.some((draft) => !contactByHandle.has(draft.handle))) {
+        throw new Error("DM batch 승인 contact handle이 화면 대상과 정확히 일치하지 않습니다.");
+      }
+
       const working = dmDrafts.map((draft) => {
         const contact = contactByHandle.get(draft.handle);
         if (!contact) return draft;
@@ -670,7 +771,7 @@ export function DiscoveryConsole() {
       await reloadDmContacts(category);
       setToast({
         kind: "success",
-        message: `OpenCode batch 시작 · ${payload.candidateCount ?? contacts.length}명 · 프로세스 1개 · 자동 전송 없음`,
+        message: `OpenCode batch 시작 · ${expectedCount}명 · 승인 ${expectedCount} · launcher ${expectedCount} · prompt ${expectedCount} · OpenCode 1회 · 자동 전송 없음`,
       });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "DM batch 전송 준비 실패";
@@ -862,13 +963,22 @@ export function DiscoveryConsole() {
                 <strong>{dmReviewStep === "edit" ? "DM 준비" : "DM 최종 확인"}</strong>
                 <span>· {dmDrafts.length}명</span>
               </div>
-              <button
-                className={dmStyles.closeButton}
-                type="button"
-                aria-label="닫기"
-                onClick={() => setDmModalOpen(false)}
-                disabled={dmReviewPreparing || Boolean(dmApprovingHandle)}
-              >×</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={regenerateDmBatch}
+                  disabled={dmLoading || dmReviewPreparing || Boolean(dmApprovingHandle)}
+                  style={{ padding: "6px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                >{dmLoading ? "재생성 중…" : "다시 생성"}</button>
+                <button
+                  className={dmStyles.closeButton}
+                  type="button"
+                  aria-label="닫기"
+                  onClick={() => setDmModalOpen(false)}
+                  disabled={dmLoading || dmReviewPreparing || Boolean(dmApprovingHandle)}
+                >×</button>
+              </div>
             </div>
 
             {dmReviewStep === "edit" ? (
@@ -931,21 +1041,25 @@ export function DiscoveryConsole() {
                 <div className={dmStyles.confirmBody}>
                   <div className={dmStyles.launcherSummary}>
                     <strong>OpenCode 실행 방식</strong>
-                    <code>PowerShell/OpenCode 창 1개 · opencode run 1회 · 승인된 {dmDrafts.length}명을 같은 Chrome 세션에서 순서대로 입력 · 실제 Send 0회</code>
+                    <code>PowerShell/OpenCode 창 1개 · opencode run 1회 · 이번 대상 {pendingDmDrafts.length}명을 후보별 별도 Instagram 탭에 입력 · 실제 Send 0회</code>
                     <span>후보 1명이 실패해도 해당 결과만 failed로 기록하고 가능한 나머지 후보는 계속 처리합니다.</span>
                   </div>
 
-                  <details className={dmStyles.promptDetails}>
-                    <summary>OpenCode 전체 프롬프트 확인</summary>
-                    <pre className={dmStyles.promptPreview}>{buildDmBatchInputPrompt(dmDrafts.map((draft) => ({
-                      contactId: `<전송 시 @${draft.handle} 승인 ID>`,
-                      handle: draft.handle,
-                      approvedJapaneseText: draft.japaneseText,
-                    })))}</pre>
-                  </details>
+                  {pendingDmDrafts.length > 0 ? (
+                    <details className={dmStyles.promptDetails}>
+                      <summary>OpenCode 전체 프롬프트 확인 · {pendingDmDrafts.length}명</summary>
+                      <pre className={dmStyles.promptPreview}>{buildDmBatchInputPrompt(pendingDmDrafts.map((draft) => ({
+                        contactId: `<전송 시 @${draft.handle} 승인 ID>`,
+                        handle: draft.handle,
+                        approvedJapaneseText: draft.japaneseText,
+                      })))}</pre>
+                    </details>
+                  ) : (
+                    <div className={dmStyles.launcherSummary}>추가 OpenCode 대상이 없습니다. 현재 초안은 이미 전송 준비 처리되었습니다.</div>
+                  )}
 
-                  <div className={dmStyles.confirmLabel}>전송 대상 {dmDrafts.length}명</div>
-                  {dmDrafts.map((draft) => (
+                  <div className={dmStyles.confirmLabel}>이번 전송 대상 {pendingDmDrafts.length}명</div>
+                  {pendingDmDrafts.map((draft) => (
                     <section className={dmStyles.confirmItem} key={`confirm-${draft.handle}`}>
                       <strong className={dmStyles.confirmHandle}>@{draft.handle}</strong>
                       <pre className={dmStyles.confirmDm}>{draft.japaneseText}</pre>
@@ -964,13 +1078,13 @@ export function DiscoveryConsole() {
                     className={dmStyles.passButton}
                     type="button"
                     onClick={approveAllDmDrafts}
-                    disabled={Boolean(dmApprovingHandle) || dmDrafts.every((draft) => draft.approved)}
+                    disabled={Boolean(dmApprovingHandle) || pendingDmDrafts.length === 0}
                   >
-                    {dmDrafts.every((draft) => draft.approved)
+                    {pendingDmDrafts.length === 0
                       ? "전송 준비 완료"
                       : dmApprovingHandle === BULK_APPROVAL_HANDLE
-                        ? "OpenCode batch 실행 중…"
-                        : "전송"}
+                        ? `OpenCode batch ${pendingDmDrafts.length}명 실행 중…`
+                        : `전송 · ${pendingDmDrafts.length}명`}
                   </button>
                 </div>
               </>
@@ -1212,6 +1326,53 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
 
 function formatBulkDmText(drafts: Array<Pick<DmDraft, "handle" | "japaneseText">>) {
   return drafts.map((draft) => `@${draft.handle}\n${draft.japaneseText}`).join("\n\n");
+}
+
+function dmSessionKey(category: SearchCategory) {
+  return `${DM_SESSION_KEY_PREFIX}${category}`;
+}
+
+function readDmSession(category: SearchCategory): StoredDmSession | null {
+  try {
+    const raw = window.sessionStorage.getItem(dmSessionKey(category));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<StoredDmSession>;
+    if (value.version !== 1 || value.category !== category || !Array.isArray(value.drafts) || !value.drafts.length) return null;
+    if (value.reviewStep !== "edit" && value.reviewStep !== "confirm") return null;
+
+    const drafts: DmDraft[] = [];
+    for (const item of value.drafts) {
+      if (!item || typeof item !== "object") return null;
+      const draft = item as Partial<DmDraft>;
+      if (
+        typeof draft.handle !== "string"
+        || draft.handle !== normalizeHandle(draft.handle)
+        || !isValidHandle(draft.handle)
+        || draft.handle.includes("\\")
+        || typeof draft.japaneseText !== "string"
+        || typeof draft.koreanText !== "string"
+        || typeof draft.generatedAt !== "string"
+        || typeof draft.provider !== "string"
+        || typeof draft.model !== "string"
+        || typeof draft.translationDirty !== "boolean"
+        || typeof draft.approved !== "boolean"
+      ) {
+        return null;
+      }
+      drafts.push(draft as DmDraft);
+    }
+    if (new Set(drafts.map((draft) => draft.handle)).size !== drafts.length) return null;
+
+    return {
+      version: 1,
+      category,
+      drafts,
+      bulkJapaneseText: typeof value.bulkJapaneseText === "string" ? value.bulkJapaneseText : formatBulkDmText(drafts),
+      reviewStep: value.reviewStep,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseBulkDmText(value: string, expectedHandles: string[]): BulkDmParseResult {
