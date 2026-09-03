@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
-import { prepareCandidateDm } from "@/lib/dm/prepare";
+import { prepareCandidateDm, type PreparedDm } from "@/lib/dm/prepare";
 import { getDmPreparationCandidates, savePreparedDm } from "@/lib/supabase/candidates";
 import { listUnsentDmContacts } from "@/lib/supabase/dm-contacts";
 
@@ -12,6 +12,15 @@ const bodySchema = z.object({
   handles: z.array(z.string().min(1).max(30).regex(/^[A-Za-z0-9._]+$/).refine((handle) => isValidHandle(handle), "Instagram ID가 올바르지 않습니다.")).min(1).max(30),
   forceRegenerate: z.boolean().optional().default(false),
 });
+
+type PreparedResponseItem = {
+  handle: string;
+  japaneseText: string;
+  koreanText: string;
+  generatedAt: string;
+  provider: string;
+  model: string;
+};
 
 export async function POST(request: Request) {
   try {
@@ -39,81 +48,81 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: `DM 준비 가능한 후보 수가 일치하지 않습니다: ${candidates.length}/${handles.length}${missing.length ? ` · ${missing.map((handle) => `@${handle}`).join(", ")}` : ""}` }, { status: 409 });
     }
 
-    if (!parsed.data.forceRegenerate) {
-      const existingDmCandidates = candidates.filter((candidate) => (
+    if (parsed.data.forceRegenerate) {
+      const regenerated = await mapWithConcurrency(candidates, 1, prepareCandidateDm);
+      await savePreparedDm(parsed.data.category, regenerated);
+      return NextResponse.json(buildPreparedResponse(regenerated.map(toResponseItem), false));
+    }
+
+    const contacts = await listUnsentDmContacts(parsed.data.category);
+    const reusableByHandle = new Map<string, PreparedResponseItem>();
+    const generateCandidates: typeof candidates = [];
+    const incompleteStoredHandles: string[] = [];
+
+    for (const candidate of candidates) {
+      const hasAnyStoredDm = Boolean(
+        candidate.dmText
+        || candidate.dmGeneratedAt
+        || candidate.dmProvider
+        || candidate.dmModel,
+      );
+      const hasCompleteStoredDm = Boolean(
         candidate.dmText
         && candidate.dmGeneratedAt
         && candidate.dmProvider
-        && candidate.dmModel
-      ));
+        && candidate.dmModel,
+      );
 
-      if (existingDmCandidates.length) {
-        const contacts = await listUnsentDmContacts(parsed.data.category);
-        const reusable = existingDmCandidates.map((candidate) => {
-          const contact = contacts.find((item) => (
-            item.handle === candidate.handle
-            && sameInstant(item.generatedAt, candidate.dmGeneratedAt)
-            && item.japaneseText === candidate.dmText
-            && Boolean(item.koreanText.trim())
-          ));
-          if (!contact) return null;
-          return {
-            handle: candidate.handle,
-            japaneseText: candidate.dmText as string,
-            koreanText: contact.koreanText,
-            generatedAt: candidate.dmGeneratedAt as string,
-            provider: candidate.dmProvider as string,
-            model: candidate.dmModel as string,
-          };
-        });
-
-        if (existingDmCandidates.length === candidates.length && reusable.every(Boolean)) {
-          const items = reusable.filter((item): item is NonNullable<typeof item> => Boolean(item));
-          return NextResponse.json({
-            ok: true,
-            preparedCount: items.length,
-            providerCounts: countProviders(items),
-            models: [...new Set(items.map((item) => item.model))],
-            items,
-            reused: true,
-          });
-        }
-
-        const unrecoverable = existingDmCandidates
-          .filter((candidate, index) => !reusable[index])
-          .map((candidate) => candidate.handle);
-        if (unrecoverable.length) {
-          return NextResponse.json({
-            ok: false,
-            error: `기존 DM 초안은 있지만 현재 작업의 한국어 해석을 안전하게 복구하지 못했습니다. 자동 재생성하지 않았습니다. 명시적인 다시 생성을 사용하세요: ${unrecoverable.map((handle) => `@${handle}`).join(", ")}`,
-          }, { status: 409 });
-        }
+      if (!hasAnyStoredDm) {
+        generateCandidates.push(candidate);
+        continue;
       }
+      if (!hasCompleteStoredDm) {
+        incompleteStoredHandles.push(candidate.handle);
+        continue;
+      }
+
+      const contact = contacts.find((item) => (
+        item.handle === candidate.handle
+        && sameInstant(item.generatedAt, candidate.dmGeneratedAt)
+        && item.japaneseText === candidate.dmText
+        && Boolean(item.koreanText.trim())
+      ));
+      if (!contact) {
+        incompleteStoredHandles.push(candidate.handle);
+        continue;
+      }
+
+      reusableByHandle.set(candidate.handle, {
+        handle: candidate.handle,
+        japaneseText: candidate.dmText as string,
+        koreanText: contact.koreanText,
+        generatedAt: candidate.dmGeneratedAt as string,
+        provider: candidate.dmProvider as string,
+        model: candidate.dmModel as string,
+      });
     }
 
-    const prepared = await mapWithConcurrency(candidates, 1, prepareCandidateDm);
-    await savePreparedDm(parsed.data.category, prepared);
+    if (incompleteStoredHandles.length) {
+      return NextResponse.json({
+        ok: false,
+        error: `기존 DM 초안은 있지만 현재 작업의 전체 내용을 안전하게 복구하지 못했습니다. 자동 재생성하지 않았습니다. 명시적인 다시 생성을 사용하세요: ${incompleteStoredHandles.map((handle) => `@${handle}`).join(", ")}`,
+      }, { status: 409 });
+    }
 
-    const providerCounts = prepared.reduce<Record<string, number>>((counts, item) => {
-      counts[item.provider] = (counts[item.provider] ?? 0) + 1;
-      return counts;
-    }, {});
+    const generated = generateCandidates.length
+      ? await mapWithConcurrency(generateCandidates, 1, prepareCandidateDm)
+      : [];
+    if (generated.length) await savePreparedDm(parsed.data.category, generated);
+    const generatedByHandle = new Map(generated.map((item) => [item.handle, toResponseItem(item)]));
 
-    return NextResponse.json({
-      ok: true,
-      preparedCount: prepared.length,
-      providerCounts,
-      models: [...new Set(prepared.map((item) => item.model))],
-      items: prepared.map((item) => ({
-        handle: item.handle,
-        japaneseText: item.dmText,
-        koreanText: item.koreanText,
-        generatedAt: item.generatedAt,
-        provider: item.provider,
-        model: item.model,
-      })),
-      reused: false,
+    const items = handles.map((handle) => {
+      const item = reusableByHandle.get(handle) ?? generatedByHandle.get(handle);
+      if (!item) throw new Error(`@${handle} DM 준비 결과를 찾지 못했습니다.`);
+      return item;
     });
+
+    return NextResponse.json(buildPreparedResponse(items, generated.length === 0));
   } catch (error) {
     console.error("dm_prepare_failed", error);
     return NextResponse.json({
@@ -121,6 +130,28 @@ export async function POST(request: Request) {
       error: error instanceof Error ? error.message : "DM 준비 중 오류가 발생했습니다.",
     }, { status: 500 });
   }
+}
+
+function toResponseItem(item: PreparedDm): PreparedResponseItem {
+  return {
+    handle: item.handle,
+    japaneseText: item.dmText,
+    koreanText: item.koreanText,
+    generatedAt: item.generatedAt,
+    provider: item.provider,
+    model: item.model,
+  };
+}
+
+function buildPreparedResponse(items: PreparedResponseItem[], reused: boolean) {
+  return {
+    ok: true,
+    preparedCount: items.length,
+    providerCounts: countProviders(items),
+    models: [...new Set(items.map((item) => item.model))],
+    items,
+    reused,
+  };
 }
 
 function countProviders(items: Array<{ provider: string }>) {
