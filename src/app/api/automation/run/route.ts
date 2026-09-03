@@ -6,6 +6,7 @@ import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt
 import { getCandidateViewState } from "@/lib/discovery/presentation";
 import type { DiscoveryCandidate } from "@/lib/discovery/types";
 import { getAutomationCandidates, listCandidates } from "@/lib/supabase/candidates";
+import { listRecentDiscoveryRuns, type StoredDiscoveryRun } from "@/lib/supabase/discovery-runs";
 import {
   createVerificationJob,
   failVerificationJob,
@@ -27,13 +28,14 @@ export async function GET(request: Request) {
   try {
     assertLocalRequest(request);
     const category = categorySchema.parse(new URL(request.url).searchParams.get("category"));
-    const [jobs, candidates] = await Promise.all([
+    const [jobs, candidates, discoveryRuns] = await Promise.all([
       listRecentVerificationJobs(category, 8),
       listCandidates(category),
+      listRecentDiscoveryRuns(category, 8),
     ]);
     const candidateMap = new Map(candidates.map((candidate) => [candidate.handle, candidate]));
 
-    const items = jobs.map((job) => {
+    const verificationItems = jobs.map((job) => {
       const processedSet = new Set(job.processedHandles);
       const remainingHandles = job.handles.filter((handle) => !processedSet.has(handle));
       const groups = job.resultSummary?.groups
@@ -74,6 +76,32 @@ export async function GET(request: Request) {
         exactSnapshot: Boolean(job.resultSummary),
       };
     });
+
+    const discoveryItems = discoveryRuns
+      .filter((run) => run.completedAt)
+      .map((run) => ({
+        id: `discovery-${run.id}`,
+        mode: "discovery" as const,
+        status: "completed" as const,
+        candidateCount: run.targetCount,
+        processedCount: run.finalAddedCount,
+        createdAt: run.createdAt,
+        completedAt: run.completedAt,
+        failedAt: null,
+        failureMessage: null,
+        destination: "후보 찾기",
+        destinationCount: run.finalAddedCount,
+        excludedCount: run.hardRejectCount + run.manualExcludedCount + run.otherFilteredCount,
+        unresolvedCount: 0,
+        groups: [],
+        exactSnapshot: true,
+        runNo: run.runNo,
+        discoverySummary: buildDiscoverySummary(run),
+      }));
+
+    const items = [...verificationItems, ...discoveryItems]
+      .sort((a, b) => historyTimestamp(b) - historyTimestamp(a))
+      .slice(0, 12);
 
     return NextResponse.json({ ok: true, items });
   } catch (error) {
@@ -129,6 +157,33 @@ export async function POST(request: Request) {
     console.error("automation_run_failed", error);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
+}
+
+function buildDiscoverySummary(run: StoredDiscoveryRun) {
+  if (!run.targetCount && !run.queryCount && !run.rawUrlCount) {
+    return `기존 기록 · 신규/근거 보강 ${run.finalAddedCount}명`;
+  }
+  return [
+    `목표 ${run.targetCount}`,
+    `query ${run.queryCount}`,
+    `Exa ${run.exaRawCount}`,
+    `Tavily ${run.tavilyRawCount}`,
+    `URL ${run.rawUrlCount}`,
+    `추출 ${run.extractedResultCount}`,
+    `고유 handle ${run.uniqueHandleCount}`,
+    `기존 ${run.existingCandidateCount}`,
+    `hard reject ${run.hardRejectCount}`,
+    `수동 제외 ${run.manualExcludedCount}`,
+    `기타 탈락 ${run.otherFilteredCount}`,
+    `신규 저장 ${run.newSavedCount}`,
+    `근거 보강 ${run.evidenceEnrichedCount}`,
+    `최종 추가 ${run.finalAddedCount}`,
+    `provider 실패 ${run.providerFailureCount}`,
+  ].join(" · ");
+}
+
+function historyTimestamp(item: { completedAt: string | null; failedAt: string | null; createdAt: string }) {
+  return new Date(item.completedAt ?? item.failedAt ?? item.createdAt).getTime();
 }
 
 function buildLegacyGroups(handles: string[], candidateMap: Map<string, DiscoveryCandidate>): VerificationJobResultGroup[] {
