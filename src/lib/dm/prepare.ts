@@ -219,7 +219,7 @@ async function generatePersonalizationLine(
     "예: 『コスメ』『植物』『編み物』가 나열되어 있으면 이를 하나의 라이프스타일 철학이나 선택 기준으로 묶지 말고 가장 적합한 사실 하나만 사용한다.",
     "예: 『コンシェルジュ』『コーデ』『肌管理』가 따로 있으면 『コンシェルジュとしてコーデや肌管理を発信』처럼 역할과 활동을 새로 연결하지 않는다.",
     "기간 표현은 원본에서 실제로 수식하는 대상을 그대로 보존한다. 예: 『韓国好き15年』은 한국을 좋아한 기간이지, 15년간 발신했다는 뜻이 아니다.",
-    "원본 근거의 의미나 분야를 다른 분야로 변환하지 않는다. 예: コーデ를肌管理로 바꾸거나, 일반적인韓国発信을美容発信으로 바꾸지 않는다.",
+    "원본 근거의 의미나 분야를 다른 분야로 변환하지 않는다. 예: コーデ를肌管理로 바꾸거나, 일반적인韓国発信を美容発信으로 바꾸지 않는다.",
     "근거에 없는 관심, 호감, 공감, 전문성, 평가, 인과관계를 추가하지 않는다. 『関心が近いと感じて』『惹かれ』『魅力を感じて』『資格を活かして』 같은 표현을 만들지 않는다.",
     "Reels/리일/재생수/조회수/팔로워/평균/표본 수/순위/검증 상태/조건 충족/중복 확인/후보 상태/내부 판정은 입력에 있더라도 절대 언급하지 않는다.",
     "사실이 여러 개면 가장 자연스럽고 구체적인 사실 1개만 고른다. 화려한 개인화보다 원본 사실을 덜 쓰는 것이 항상 낫다.",
@@ -457,10 +457,12 @@ function normalizeModelLine(value: string | null | undefined) {
     throw new DmLineValidationError("line_break", compact(raw, 220));
   }
 
-  const line = raw
-    .replace(/^[\"'「『]|[\"'」』]$/g, "")
-    .replace(/[\t ]+/g, " ")
-    .trim();
+  const line = fixKnownJapaneseParticleOmission(
+    raw
+      .replace(/^[\"'「『]|[\"'」』]$/g, "")
+      .replace(/[\t ]+/g, " ")
+      .trim(),
+  );
 
   if (!line || line.length > 220) {
     throw new DmLineValidationError("invalid_length", compact(line, 220));
@@ -488,6 +490,10 @@ function normalizeModelLine(value: string | null | undefined) {
   }
 
   return line;
+}
+
+function fixKnownJapaneseParticleOmission(value: string) {
+  return value.replace(/発信されているの拝見/g, "発信されているのを拝見");
 }
 
 function ensureSpecificPersonalization(line: string) {
