@@ -1,6 +1,7 @@
-import type { AccountAvailability, AccountType, CandidateActivity, ContentFit, DiscoveryCandidate, DmProvider, DuplicateCheckStatus, Eligibility, KoreaAffinity, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
+import type { AccountAvailability, AccountType, CandidateActivity, ContentFit, DiscoveryCandidate, DmProvider, DuplicateCheckStatus, Eligibility, FollowerSource, KoreaAffinity, ReelMetricsStatus, ReelSnapshot, SearchCategory, SearchProviderName, VerificationStatus } from "@/lib/discovery/types";
 import type { PreparedDm } from "@/lib/dm/prepare";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
+import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
@@ -48,7 +49,7 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
   const handles = [...new Set(candidates.map((candidate) => candidate.handle))];
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, source_provider, evidence_url, evidence_text, evidence_kind, flags, discovery_status")
+    .select("normalized_handle, source_provider, evidence_url, evidence_text, evidence_kind, flags, discovery_status, followers, followers_source")
     .eq("category", category)
     .eq("verification_status", "needs_instagram")
     .in("normalized_handle", handles)
@@ -91,6 +92,15 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
     ].filter((flag) => flag.startsWith("제외검토:"));
 
     const usePriorPrimary = priorKind === "profile" && candidate.evidenceKind !== "profile";
+    const priorFollowers = numberOrNull(prior.followers);
+    const priorFollowersSource = normalizeFollowerSource(prior.followers_source);
+    const preserveExactFollowers = priorFollowers !== null && priorFollowersSource === "instagram";
+    const followers = preserveExactFollowers ? priorFollowers : candidate.followers ?? priorFollowers;
+    const followersSource = preserveExactFollowers
+      ? "instagram" as const
+      : candidate.followers !== null
+        ? candidate.followersSource
+        : priorFollowersSource;
 
     return {
       ...candidate,
@@ -108,6 +118,8 @@ export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandida
       koreaSignals: assessment.koreaSignals,
       rejectReasons: assessment.rejectReasons,
       flags: [...new Set([...assessment.flags, ...preservedReviewFlags])],
+      followers,
+      followersSource,
       verificationStatus: assessment.candidateStatus === "hard_reject" ? "hard_reject" : "needs_instagram",
     };
   });
@@ -119,7 +131,7 @@ export async function listCandidates(category: SearchCategory) {
 
   const { data, error } = await supabase
     .from("creator_candidates")
-    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, account_availability, account_type, korea_affinity, content_fit, eligibility, activity, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, dm_personalization_source, dm_personalization_basis, dm_personalization_line, dm_text, dm_provider, dm_model, dm_generated_at, first_seen_at, last_seen_at")
+    .select("normalized_handle, profile_url, category, source_provider, evidence_url, evidence_text, evidence_kind, account_availability, account_type, korea_affinity, content_fit, eligibility, activity, target_signals, korea_signals, flags, duplicate_check_status, duplicate_check_message, duplicate_checked_at, bio, followers, followers_source, reel_average, reel_median, reel_sample_size, reel_checked_count, reel_total_considered, reel_metrics_status, reel_views, last_activity_at, verification_note, verification_status, discovery_status, verified_at, dm_personalization_source, dm_personalization_basis, dm_personalization_line, dm_text, dm_provider, dm_model, dm_generated_at, first_seen_at, last_seen_at")
     .eq("category", category)
     .order("first_seen_at", { ascending: false })
     .limit(1000);
@@ -174,6 +186,7 @@ export async function listCandidates(category: SearchCategory) {
       duplicateCheckedAt: nullableString(row.duplicate_checked_at),
       bio: nullableString(row.bio),
       followers: numberOrNull(row.followers),
+      followersSource: normalizeFollowerSource(row.followers_source),
       reelAverage: numberOrNull(row.reel_average),
       reelMedian: numberOrNull(row.reel_median),
       reelSampleSize: numberOrNull(row.reel_sample_size),
@@ -224,6 +237,8 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
       flags: [...candidate.flags, ...candidate.rejectReasons.map((reason) => `제외:${reason}`)]
         .map(sanitizeDbText)
         .filter(Boolean),
+      followers: candidate.followers,
+      followers_source: candidate.followersSource,
       verification_status: candidate.verificationStatus,
       discovery_status: candidate.candidateStatus,
       last_seen_at: candidate.discoveredAt,
@@ -257,6 +272,37 @@ export async function saveCandidates(candidates: DiscoveryCandidate[]) {
   if (failedHandles.length) {
     console.warn("supabase_candidate_rows_skipped", failedHandles);
   }
+}
+
+export async function manuallyExcludeCandidate(category: SearchCategory, rawHandle: string) {
+  const handle = normalizeHandle(rawHandle);
+  if (!isValidHandle(handle)) throw new Error("제외할 Instagram ID가 올바르지 않습니다.");
+
+  const current = (await listCandidates(category)).find((candidate) => candidate.handle === handle);
+  if (!current) throw new Error(`@${handle} 후보를 찾지 못했습니다.`);
+  if (getCandidateViewState(current) !== "verification_needed") {
+    throw new Error("수동 제외는 검증 필요 후보에서만 실행할 수 있습니다.");
+  }
+
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("creator_candidates")
+    .update({
+      discovery_status: "hard_reject",
+      verification_status: "rejected",
+      verification_note: "수동 제외",
+      updated_at: now,
+    })
+    .eq("normalized_handle", handle)
+    .eq("category", category)
+    .select("normalized_handle")
+    .maybeSingle();
+
+  if (error) throw new Error(`@${handle} 수동 제외 저장 실패: ${error.message}`);
+  if (!data) throw new Error(`@${handle} 수동 제외 대상을 찾지 못했습니다.`);
+  return { handle, excludedAt: now };
 }
 
 export async function getAutomationCandidates(
@@ -380,6 +426,10 @@ function normalizeProvider(value: unknown): SearchProviderName {
 
 function normalizeDmProvider(value: unknown): DmProvider | null {
   return value === "groq" || value === "scaleway" || value === "fallback" ? value : null;
+}
+
+function normalizeFollowerSource(value: unknown): FollowerSource | null {
+  return value === "search" || value === "instagram" ? value : null;
 }
 
 function normalizeVerificationStatus(value: unknown): VerificationStatus {
