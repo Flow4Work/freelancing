@@ -236,15 +236,23 @@ if (-not $IsRun) {
 $Provider = Get-ProviderName $Model
 $IsPrimaryRun = $Model -eq $PrimaryModel
 
-if (-not $IsPrimaryRun -and -not ($Arguments -contains '--dangerously-skip-permissions')) {
-    $Arguments += '--dangerously-skip-permissions'
+if (-not $IsPrimaryRun) {
+    $HasAutoApproval = ($Arguments -contains '--auto') -or ($Arguments -contains '--yolo') -or ($Arguments -contains '--dangerously-skip-permissions')
+    if (-not $HasAutoApproval) {
+        $Arguments += '--auto'
+    }
 }
 
 if ($IsPrimaryRun) {
     $Circuit = Get-OpenPrimaryCircuit
     if ($null -ne $Circuit) {
-        [Console]::Error.WriteLine("Free usage exceeded: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
-        exit 173
+        if ([string]$Circuit.reason -eq 'quota') {
+            [Console]::Error.WriteLine("Free usage exceeded: cached primary quota circuit open until $($Circuit.expiresAt).")
+            exit 173
+        }
+
+        [Console]::Error.WriteLine("Provider unavailable: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
+        exit 175
     }
 }
 else {
