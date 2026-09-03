@@ -816,10 +816,23 @@ export function DiscoveryConsole() {
             <label htmlFor="target">이번 추가 목표</label>
             <input id="target" type="number" min={10} max={300} value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} />
           </div>
-          <div className="candidate-summary-inline">
-            {listLoading
-              ? "누적 후보 불러오는 중…"
-              : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · 발송 확인 ${sendReadyContacts.length} · 제외 ${excludedTotal}`}
+          <div className="candidate-summary-inline" aria-label="누적 후보 요약">
+            {listLoading ? (
+              <span className="summary-loading">누적 후보 불러오는 중…</span>
+            ) : (
+              <>
+                <span className="summary-group-label">후보</span>
+                <span className="summary-chip">전체 <strong>{visibleCandidates.length}</strong></span>
+                <span className="summary-chip">검증 필요 <strong>{verificationNeededTotal}</strong></span>
+                <span className="summary-chip">추천 <strong>{recommendedTotal}</strong></span>
+                <span className="summary-group-spacer" aria-hidden="true" />
+                <span className="summary-group-label">진행</span>
+                <span className="summary-chip">중복 통과 <strong>{duplicatePassedTotal}</strong></span>
+                <span className="summary-chip">최종 <strong>{finalVerificationTotal}</strong></span>
+                <span className="summary-chip">발송 <strong>{sendReadyContacts.length}</strong></span>
+                <span className="summary-chip">제외 <strong>{excludedTotal}</strong></span>
+              </>
+            )}
           </div>
           <div className="control-actions">
             <div className="history-control">
@@ -885,6 +898,54 @@ export function DiscoveryConsole() {
 
       <section className="card results">
         <div className="results-head">
+          <div className="results-left">
+            <strong className="results-title">누적 후보</strong>
+            <div className="results-workspace">
+              <div className="verification-selection-slot">
+                {statusFilter === "verification_needed" && (
+                  <>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={selectVerificationBatch}
+                      disabled={automationLoading || !filteredCandidates.length || selectedVerificationHandles.size >= 30}
+                      style={{ padding: "7px 10px", fontSize: 12 }}
+                    >30명 선택</button>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={clearVerificationSelection}
+                      disabled={automationLoading || selectedVerificationHandles.size === 0}
+                      style={{ padding: "7px 10px", fontSize: 12 }}
+                    >선택 해제</button>
+                    <span style={{ color: "#6b7684", fontSize: 12 }}>{selectedVerificationHandles.size}/30</span>
+                  </>
+                )}
+              </div>
+              <div style={{ width: ACTION_SLOT_WIDTH, flex: `0 0 ${ACTION_SLOT_WIDTH}px` }}>
+                {action && (
+                  <button
+                    className={`secondary action-button ${action.mode === "dm" ? dmStyles.dmActionButton : ""}`}
+                    style={{
+                      width: "100%",
+                      whiteSpace: "nowrap",
+                      ...(action.mode === "instagram" ? { background: "#dc2626" } : {}),
+                    }}
+                    onClick={() => action.mode === "dm" ? runDmPrepare() : runAutomation(action.mode)}
+                    disabled={
+                      automationLoading
+                      || dmLoading
+                      || (statusFilter === "verification_needed" && action.mode === "duplicate"
+                        ? selectedVerificationHandles.size === 0
+                        : !filteredCandidates.length)
+                    }
+                  >
+                    {action.mode === "dm" && dmLoading ? "생성 중…" : automationLoading ? "실행 중…" : action.label}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
           <div className="results-tabs">
             <div className="mini-segment" aria-label="상태 필터">
               <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>전체</button>
@@ -894,51 +955,6 @@ export function DiscoveryConsole() {
               <button className={statusFilter === "duplicate_passed" ? "active" : ""} onClick={() => setStatusFilter("duplicate_passed")}>중복 통과</button>
               <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증 완료</button>
               <button className={statusFilter === "send_confirmation" ? "active" : ""} onClick={() => setStatusFilter("send_confirmation")}>발송 확인</button>
-            </div>
-          </div>
-          <div className="results-workspace">
-            <div className="verification-selection-slot">
-              {statusFilter === "verification_needed" && (
-                <>
-                  <button
-                    className="secondary"
-                    type="button"
-                    onClick={selectVerificationBatch}
-                    disabled={automationLoading || !filteredCandidates.length || selectedVerificationHandles.size >= 30}
-                    style={{ padding: "7px 10px", fontSize: 12 }}
-                  >30명 선택</button>
-                  <button
-                    className="secondary"
-                    type="button"
-                    onClick={clearVerificationSelection}
-                    disabled={automationLoading || selectedVerificationHandles.size === 0}
-                    style={{ padding: "7px 10px", fontSize: 12 }}
-                  >선택 해제</button>
-                  <span style={{ color: "#6b7684", fontSize: 12 }}>{selectedVerificationHandles.size}/30</span>
-                </>
-              )}
-            </div>
-            <div style={{ width: ACTION_SLOT_WIDTH, flex: `0 0 ${ACTION_SLOT_WIDTH}px` }}>
-              {action && (
-                <button
-                  className={`secondary action-button ${action.mode === "dm" ? dmStyles.dmActionButton : ""}`}
-                  style={{
-                    width: "100%",
-                    whiteSpace: "nowrap",
-                    ...(action.mode === "instagram" ? { background: "#dc2626" } : {}),
-                  }}
-                  onClick={() => action.mode === "dm" ? runDmPrepare() : runAutomation(action.mode)}
-                  disabled={
-                    automationLoading
-                    || dmLoading
-                    || (statusFilter === "verification_needed" && action.mode === "duplicate"
-                      ? selectedVerificationHandles.size === 0
-                      : !filteredCandidates.length)
-                  }
-                >
-                  {action.mode === "dm" && dmLoading ? "생성 중…" : automationLoading ? "실행 중…" : action.label}
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -1202,8 +1218,8 @@ function SendConfirmationTable({
 
   return (
     <div className="table-wrap">
-      <table>
-        <thead><tr><th style={{ width: 170 }}>Instagram</th><th>일본어 원문</th><th style={{ width: 110 }}>상태</th><th style={{ width: 120 }}>확인</th></tr></thead>
+      <table className="send-confirmation-table">
+        <thead><tr><th>Instagram</th><th>일본어 원문</th><th>상태</th><th>확인</th></tr></thead>
         <tbody>
           {contacts.map((contact) => (
             <tr key={contact.id}>
