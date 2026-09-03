@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $PrimaryModel = if ([string]::IsNullOrWhiteSpace($env:FIXUP_OPENCODE_PRIMARY_MODEL)) {
-    'opencode/muse-spark-1.2-contributor-free'
+    'opencode/muse-spark-1.3-contributor-free'
 } else {
     $env:FIXUP_OPENCODE_PRIMARY_MODEL.Trim()
 }
