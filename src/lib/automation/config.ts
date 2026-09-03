@@ -6,12 +6,12 @@ export const AUTOMATION_BATCH_SIZE = 30;
 
 export function getOpenCodeCommand() {
   const configured = process.env.OPENCODE_COMMAND?.trim();
-  if (configured) return configured;
+  const isDefaultCommand = !configured || configured.toLowerCase() === "opencode";
 
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && isDefaultCommand) {
     const wrapper = path.join(process.cwd(), "scripts", "fixup-opencode.cmd");
     if (existsSync(wrapper)) return wrapper;
   }
 
-  return "opencode";
+  return configured || "opencode";
 }
