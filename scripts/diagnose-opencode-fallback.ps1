@@ -36,7 +36,7 @@ function Get-EnvLocalValue {
 }
 
 $Secrets = @()
-foreach ($Name in @('MISTRAL_API_KEY','NVIDIA_API_KEY','FIXUP_DUPLICATE_LOGIN_ID','FIXUP_DUPLICATE_LOGIN_PASSWORD')) {
+foreach ($Name in @('MISTRAL_API_KEY','NVIDIA_API_KEY')) {
     $Value = Get-EnvLocalValue -Name $Name
     if (-not [string]::IsNullOrWhiteSpace($Value)) {
         $Secrets += $Value
@@ -57,15 +57,34 @@ function Redact-Text {
     return $Safe
 }
 
+function Resolve-OpenCodeExecutable {
+    $Command = Get-Command opencode -ErrorAction Stop | Select-Object -First 1
+    $Source = [string]$Command.Source
+
+    if ($Source -match '(?i)\.exe$' -and (Test-Path -LiteralPath $Source)) {
+        return $Source
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Source)) {
+        $Base = Split-Path -Parent $Source
+        $Candidate = Join-Path $Base 'node_modules\opencode-ai\bin\opencode.exe'
+        if (Test-Path -LiteralPath $Candidate) {
+            return $Candidate
+        }
+    }
+
+    $ExeCommand = Get-Command opencode.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $ExeCommand -and (Test-Path -LiteralPath $ExeCommand.Source)) {
+        return [string]$ExeCommand.Source
+    }
+
+    throw 'Could not resolve the real opencode.exe executable.'
+}
+
 function Stop-TestTree {
     param([int]$TargetPid)
     if ($TargetPid -le 0) { return }
-    try {
-        & taskkill.exe /PID $TargetPid /T /F 2>$null | Out-Null
-    }
-    catch {
-        try { Stop-Process -Id $TargetPid -Force -ErrorAction SilentlyContinue } catch {}
-    }
+    try { & taskkill.exe /PID $TargetPid /T /F 2>$null | Out-Null } catch {}
 }
 
 function Show-ExistingLog {
@@ -88,31 +107,28 @@ function Show-ExistingLog {
     Write-Host 'EXISTING_LOG_CONTENT_END'
 }
 
-function Invoke-OpenCodeCaptured {
+function Invoke-ModelListCaptured {
     param(
         [Parameter(Mandatory=$true)][string]$Tag,
-        [Parameter(Mandatory=$true)][string[]]$Arguments,
-        [int]$TimeoutSec = 60
+        [Parameter(Mandatory=$true)][string]$Provider
     )
 
     $StdoutFile = Join-Path $TempRoot ($Tag + '.stdout.log')
     $StderrFile = Join-Path $TempRoot ($Tag + '.stderr.log')
     Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
 
-    $ArgsJson = $Arguments | ConvertTo-Json -Compress
-    $env:FIXUP_DIAG_ARGS = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ArgsJson))
-    $ChildCommand = '$ErrorActionPreference="Continue"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_DIAG_ARGS)); $a=@($json | ConvertFrom-Json); & opencode @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
-    $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ChildCommand))
-
-    $Process = Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$Encoded) `
+    # IMPORTANT: invoke the real exe with two distinct argv values.
+    # The previous diagnostic JSON/ConvertFrom-Json bridge collapsed
+    # "models" + provider into one positional argument on Windows PowerShell 5.1.
+    $Process = Start-Process -FilePath $OpenCodeExe `
+        -ArgumentList @('models', $Provider) `
         -WorkingDirectory $Repo `
         -WindowStyle Hidden `
         -RedirectStandardOutput $StdoutFile `
         -RedirectStandardError $StderrFile `
         -PassThru
 
-    $TimedOut = -not $Process.WaitForExit($TimeoutSec * 1000)
+    $TimedOut = -not $Process.WaitForExit($TimeoutSeconds * 1000)
     if ($TimedOut) {
         Stop-TestTree -TargetPid $Process.Id
         try { $Process.WaitForExit(5000) | Out-Null } catch {}
@@ -130,15 +146,14 @@ function Invoke-OpenCodeCaptured {
 
     $Combined = $Stdout + [Environment]::NewLine + $Stderr
     [IO.File]::WriteAllText((Join-Path $TempRoot ($Tag + '.combined.log')), $Combined, (New-Object Text.UTF8Encoding($false)))
-    Remove-Item Env:FIXUP_DIAG_ARGS -ErrorAction SilentlyContinue
 
     return [pscustomobject]@{
         Tag = $Tag
+        Provider = $Provider
         ExitCode = $ExitCode
         TimedOut = $TimedOut
         Stdout = $Stdout
         Stderr = $Stderr
-        Combined = $Combined
     }
 }
 
@@ -147,6 +162,7 @@ function Show-Result {
 
     Write-Host ''
     Write-Host "COMMAND_TAG=$($Result.Tag)" -ForegroundColor Cyan
+    Write-Host "ARGV=models | $($Result.Provider)"
     Write-Host "EXIT_CODE=$($Result.ExitCode)"
     Write-Host "TIMED_OUT=$($Result.TimedOut)"
     Write-Host 'STDOUT_BEGIN'
@@ -169,15 +185,20 @@ function Show-ModelSummary {
     Write-Host ($Name + '=' + $(if ($Ids.Count -gt 0) { $Ids -join ',' } else { 'NONE' }))
 }
 
-Write-Host '[FixUp Scout] model-list diagnosis (NO --refresh)' -ForegroundColor Green
+Write-Host '[FixUp Scout] model-list diagnosis v2 (real argv, NO --refresh)' -ForegroundColor Green
 $Head = (git rev-parse HEAD).Trim()
 Write-Host "LOCAL_HEAD=$Head"
-$Version = (& opencode --version 2>$null | Select-Object -First 1)
+$OpenCodeExe = Resolve-OpenCodeExecutable
+Write-Host "OPENCODE_EXECUTABLE=$OpenCodeExe"
+$Version = (& $OpenCodeExe --version 2>$null | Select-Object -First 1)
 Write-Host "OPENCODE_VERSION=$Version"
 Write-Host ('MISTRAL_KEY_PRESENT=' + (-not [string]::IsNullOrWhiteSpace($env:MISTRAL_API_KEY)))
 Write-Host ('NVIDIA_KEY_PRESENT=' + (-not [string]::IsNullOrWhiteSpace($env:NVIDIA_API_KEY)))
 
-# First expose the exact errors from the previous --refresh based diagnosis.
+Write-Host ''
+Write-Host 'CONFIRMED_PRIOR_DIAGNOSTIC_BUG=arguments were collapsed into one positional project path' -ForegroundColor Yellow
+Write-Host 'EVIDENCE_EXPECTED=old error path ends with "models mistral" or "models nvidia" instead of executing the models subcommand'
+
 Show-ExistingLog -Name 'mistral-current-models.combined.log'
 Show-ExistingLog -Name 'mistral-native-models.combined.log'
 Show-ExistingLog -Name 'nvidia-native-models.combined.log'
@@ -186,26 +207,23 @@ $OldDisableProject = [Environment]::GetEnvironmentVariable('OPENCODE_DISABLE_PRO
 $OldInlineConfig = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_CONTENT')
 
 try {
-    # 1) Production/current project config Mistral. Deliberately NO --refresh.
     Remove-Item Env:OPENCODE_DISABLE_PROJECT_CONFIG -ErrorAction SilentlyContinue
     Remove-Item Env:OPENCODE_CONFIG_CONTENT -ErrorAction SilentlyContinue
-    $CurrentMistral = Invoke-OpenCodeCaptured -Tag 'mistral-current-models-no-refresh' -Arguments @('models','mistral') -TimeoutSec $TimeoutSeconds
+    $CurrentMistral = Invoke-ModelListCaptured -Tag 'mistral-current-models-real-argv' -Provider 'mistral'
     Show-Result $CurrentMistral
     $CurrentMistralIds = Get-ModelIds -Text $CurrentMistral.Stdout -Provider 'mistral'
     Show-ModelSummary -Name 'MISTRAL_CURRENT_MODELS' -Ids $CurrentMistralIds
 
-    # 2) Built-in/native catalog only. Deliberately NO project config and NO --refresh.
     $env:OPENCODE_DISABLE_PROJECT_CONFIG = '1'
     Remove-Item Env:OPENCODE_CONFIG_CONTENT -ErrorAction SilentlyContinue
-    $NativeMistral = Invoke-OpenCodeCaptured -Tag 'mistral-native-models-no-refresh' -Arguments @('models','mistral') -TimeoutSec $TimeoutSeconds
+    $NativeMistral = Invoke-ModelListCaptured -Tag 'mistral-native-models-real-argv' -Provider 'mistral'
     Show-Result $NativeMistral
     $NativeMistralIds = Get-ModelIds -Text $NativeMistral.Stdout -Provider 'mistral'
     Show-ModelSummary -Name 'MISTRAL_NATIVE_MODELS' -Ids $NativeMistralIds
 
-    # 3) NVIDIA as production actually sees it: restore project config first.
     Remove-Item Env:OPENCODE_DISABLE_PROJECT_CONFIG -ErrorAction SilentlyContinue
     Remove-Item Env:OPENCODE_CONFIG_CONTENT -ErrorAction SilentlyContinue
-    $CurrentNvidia = Invoke-OpenCodeCaptured -Tag 'nvidia-current-models-no-refresh' -Arguments @('models','nvidia') -TimeoutSec $TimeoutSeconds
+    $CurrentNvidia = Invoke-ModelListCaptured -Tag 'nvidia-current-models-real-argv' -Provider 'nvidia'
     Show-Result $CurrentNvidia
     $CurrentNvidiaIds = Get-ModelIds -Text $CurrentNvidia.Stdout -Provider 'nvidia'
     Show-ModelSummary -Name 'NVIDIA_MODELS' -Ids $CurrentNvidiaIds
@@ -215,11 +233,11 @@ try {
     if ($AnyModel) {
         Write-Host 'MODEL_LOOKUP_RESULT=PASS_AT_LEAST_ONE_PROVIDER' -ForegroundColor Green
         Write-Host 'AB_TEST=NOT_RUN_IN_THIS_STEP' -ForegroundColor Yellow
-        Write-Host 'NEXT=Run A/B only against the model IDs proven above. Do not run Scout E2E yet.'
+        Write-Host 'NEXT=Run A/B only against model IDs proven by this output. Do not run Scout E2E yet.'
     } else {
         Write-Host 'MODEL_LOOKUP_RESULT=FAIL_ALL_PROVIDERS' -ForegroundColor Red
         Write-Host 'AB_TEST=NOT_RUN'
-        Write-Host 'NEXT=Use the printed exit code/stdout/stderr as the actual failure evidence before changing any provider config.'
+        Write-Host 'NEXT=Use the real argv exit/stdout/stderr above as provider-specific evidence.'
     }
 }
 finally {
