@@ -102,7 +102,7 @@
 }
 
 .results-head {
-  grid-template-columns: auto minmax(0, 1fr) auto 356px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 
 .results-title {
@@ -116,6 +116,13 @@
 
 .results-workspace {
   grid-column: 4;
+  width: auto;
+  min-width: 0;
+}
+
+.verification-selection-slot:empty,
+.results-workspace > div:last-child:empty {
+  display: none;
 }
 
 .results-tabs .mini-segment,
