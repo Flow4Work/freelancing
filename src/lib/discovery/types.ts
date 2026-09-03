@@ -11,6 +11,7 @@ export type ContentFit = "beauty" | "food" | "korea_travel" | "lifestyle" | "oth
 export type Eligibility = "possible" | "fail" | "unknown";
 export type CandidateActivity = "active" | "unknown";
 export type DmProvider = "groq" | "scaleway" | "fallback";
+export type FollowerSource = "search" | "instagram";
 
 export type RawSearchResult = {
   provider: SearchProviderName;
@@ -49,6 +50,7 @@ export type DiscoveryCandidate = {
   duplicateCheckedAt: string | null;
   bio: string | null;
   followers: number | null;
+  followersSource: FollowerSource | null;
   reelAverage: number | null;
   reelMedian: number | null;
   reelSampleSize: number | null;
