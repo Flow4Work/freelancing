@@ -529,12 +529,6 @@ export function DiscoveryConsole() {
   }
 
   async function runDmPrepare(targetHandles?: string[], forceRegenerate = false) {
-    if (!targetHandles && !forceRegenerate && dmDraftCategory === category && dmDrafts.length) {
-      setDmModalOpen(true);
-      setToast({ kind: "success", message: `기존 DM 초안 ${dmDrafts.length}명 다시 열기 · LLM 재생성 없음` });
-      return;
-    }
-
     const handles = targetHandles ?? filteredCandidates.slice(0, 30).map((candidate) => candidate.handle);
     if (!handles.length) {
       setToast({ kind: "error", message: "DM을 준비할 최종 검증 완료 후보가 없습니다." });
@@ -544,6 +538,18 @@ export function DiscoveryConsole() {
     const invalidHandle = handles.find((handle) => handle !== normalizeHandle(handle) || !isValidHandle(handle) || handle.includes("\\"));
     if (invalidHandle) {
       setToast({ kind: "error", message: `실제 Instagram handle이 올바르지 않습니다: ${JSON.stringify(invalidHandle)}` });
+      return;
+    }
+
+    const canReuseCurrentDrafts = !targetHandles
+      && !forceRegenerate
+      && dmDraftCategory === category
+      && dmDrafts.some((draft) => !draft.approved)
+      && sameHandleSet(handles, dmDrafts.map((draft) => draft.handle));
+
+    if (canReuseCurrentDrafts) {
+      setDmModalOpen(true);
+      setToast({ kind: "success", message: `기존 DM 초안 ${dmDrafts.length}명 다시 열기 · LLM 재생성 없음` });
       return;
     }
 
@@ -610,7 +616,7 @@ export function DiscoveryConsole() {
   async function regenerateDmBatch() {
     if (!dmDrafts.length || dmLoading || dmReviewPreparing || dmApprovingHandle) return;
     if (!window.confirm(`현재 DM 초안 ${dmDrafts.length}명을 실제로 다시 생성할까요? Groq/Scaleway를 다시 호출합니다.`)) return;
-    await runDmPrepare(undefined, true);
+    await runDmPrepare(dmDrafts.map((draft) => draft.handle), true);
   }
 
   async function requestDmTranslation(japaneseText: string) {
@@ -1157,7 +1163,7 @@ function CandidateTable({
                       onClick={() => onDelete(candidate.handle)}
                       disabled={Boolean(deletingHandle)}
                       style={{ padding: "5px 8px", fontSize: 11, whiteSpace: "nowrap" }}
-                    >{deletingHandle === candidate.handle ? "처리 중" : "삭제"}</button>
+                    >{deletingCandidateHandle === candidate.handle ? "처리 중" : "삭제"}</button>
                   </td>
                 )}
               </tr>
@@ -1327,6 +1333,14 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
 
 function formatBulkDmText(drafts: Array<Pick<DmDraft, "handle" | "japaneseText">>) {
   return drafts.map((draft) => `@${draft.handle}\n${draft.japaneseText}`).join("\n\n");
+}
+
+function sameHandleSet(first: string[], second: string[]) {
+  if (first.length !== second.length) return false;
+  const firstSet = new Set(first);
+  const secondSet = new Set(second);
+  if (firstSet.size !== first.length || secondSet.size !== second.length) return false;
+  return first.every((handle) => secondSet.has(handle));
 }
 
 function dmSessionKey(category: SearchCategory) {
