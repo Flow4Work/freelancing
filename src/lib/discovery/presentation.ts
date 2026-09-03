@@ -43,6 +43,11 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     const sourceState = getSearchStageViewState(candidate);
     if (sourceState === "unmapped") return "unmapped";
 
+    // FixUp 등록 가능만으로는 통과시키지 않는다. Instagram에서 정확한 팔로워 수가 확인된 후보만 다음 단계로 보낸다.
+    if (candidate.followers === null || candidate.followersSource !== "instagram") {
+      return sourceState;
+    }
+
     // 중복 통과 후 최종 검증이 끝나지 않았거나 필수값이 부족하면 중복 통과에 남겨 재검증한다.
     if (candidate.verificationStatus === "needs_instagram" || candidate.verificationStatus === "insufficient") {
       return "duplicate_passed";
