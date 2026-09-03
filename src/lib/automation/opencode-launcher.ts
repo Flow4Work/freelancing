@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
 
-const DEFAULT_PRIMARY_MODEL = "opencode/muse-spark-1.3-contributor-free";
-const DEFAULT_MISTRAL_MODEL = "mistral/mistral-small-latest";
-const DEFAULT_NVIDIA_MODEL = "nvidia/minimaxai/minimax-m3";
+const DEFAULT_PRIMARY_MODEL = "opencode/muse-spark-1.2-contributor-free";
+const DEFAULT_MISTRAL_MODEL = "mistral/mistral-medium-2604";
+const DEFAULT_DEEPSEEK_MODEL = "nvidia/deepseek-ai/deepseek-v4-flash-0731";
+const DEFAULT_KIMI_MODEL = "nvidia/moonshotai/kimi-k3";
 const DEFAULT_STALL_SECONDS = 75;
 const DEFAULT_MAX_RETRY_AFTER_SECONDS = 15;
 
@@ -47,7 +48,8 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const modelChain = [...new Set([
     getEnvModel("FIXUP_OPENCODE_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL),
     getEnvModel("FIXUP_OPENCODE_MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL),
-    getEnvModel("FIXUP_OPENCODE_NVIDIA_MODEL", DEFAULT_NVIDIA_MODEL),
+    getEnvModel("FIXUP_OPENCODE_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
+    getEnvModel("FIXUP_OPENCODE_KIMI_MODEL", DEFAULT_KIMI_MODEL),
   ])];
   const stallSeconds = getBoundedInteger("FIXUP_OPENCODE_STALL_SECONDS", DEFAULT_STALL_SECONDS, 30, 600);
   const maxRetryAfterSeconds = getBoundedInteger(

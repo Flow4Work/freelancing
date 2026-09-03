@@ -9,8 +9,8 @@
         "apiKey": "{env:MISTRAL_API_KEY}"
       },
       "models": {
-        "mistral-small-latest": {
-          "name": "Mistral Small Latest"
+        "mistral-medium-2604": {
+          "name": "Mistral Medium 3.5 (2604)"
         }
       }
     },
@@ -19,8 +19,11 @@
         "apiKey": "{env:NVIDIA_API_KEY}"
       },
       "models": {
-        "minimaxai/minimax-m3": {
-          "name": "MiniMax M3"
+        "deepseek-ai/deepseek-v4-flash-0731": {
+          "name": "DeepSeek V4 Flash 0731"
+        },
+        "moonshotai/kimi-k3": {
+          "name": "Kimi K3"
         }
       }
     }
