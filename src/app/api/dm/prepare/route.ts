@@ -85,7 +85,7 @@ export async function POST(request: Request) {
       const contact = contacts.find((item) => (
         item.handle === candidate.handle
         && sameInstant(item.generatedAt, candidate.dmGeneratedAt)
-        && item.japaneseText === candidate.dmText
+        && Boolean(item.japaneseText.trim())
         && Boolean(item.koreanText.trim())
       ));
       if (!contact) {
@@ -95,7 +95,7 @@ export async function POST(request: Request) {
 
       reusableByHandle.set(candidate.handle, {
         handle: candidate.handle,
-        japaneseText: candidate.dmText as string,
+        japaneseText: contact.japaneseText,
         koreanText: contact.koreanText,
         generatedAt: candidate.dmGeneratedAt as string,
         provider: candidate.dmProvider as string,
