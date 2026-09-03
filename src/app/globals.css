@@ -405,36 +405,34 @@ h1 {
   font-weight: 700;
   white-space: nowrap;
 }
-.results-tabs {
-  order: 2;
-  flex: 0 0 auto;
-  margin-left: auto;
-  white-space: nowrap;
-}
-.results-tabs .mini-segment,
-.results-tabs .mini-segment button {
-  white-space: nowrap;
-}
 .results-workspace {
-  order: 3;
-  display: flex;
-  flex: 0 0 306px;
-  width: 306px;
-  min-width: 306px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  white-space: nowrap;
+  display: contents;
 }
 .verification-selection-slot {
+  order: 2;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex: 0 0 180px;
   width: 180px;
   min-width: 180px;
+  margin-left: auto;
   gap: 6px;
   white-space: nowrap;
+}
+.results-tabs {
+  order: 3;
+  flex: 0 0 auto;
+  margin-left: 0;
+  white-space: nowrap;
+}
+.results-tabs .mini-segment,
+.results-tabs .mini-segment button {
+  white-space: nowrap;
+}
+.results-workspace > div:last-child {
+  order: 4;
+  min-width: 118px;
 }
 .verification-selection-slot .secondary { flex: 0 0 auto; }
 .results-workspace button { white-space: nowrap; }
