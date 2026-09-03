@@ -35,20 +35,33 @@ ${candidateRows}
 - 각 POST 응답의 processedCount/totalCount를 확인한다. POST가 실패하면 다음 후보로 넘어가지 않고 실패 종료한다.
 - 마지막 후보 POST 응답은 completed:true여야 전체 완료다.
 
+로그인 및 폼 진입 규칙:
+1. 먼저 ${FIXUP_DUPLICATE_CHECK_URL} 로 navigate한다.
+2. navigate 직후 최신 snapshot을 새로 찍는다.
+3. 현재 문서 snapshot에 로그인 ID/PW 입력칸이 정상적으로 보이고 입력 가능한 경우에만 그 최신 snapshot의 실제 ref를 사용해 ID/PW를 입력한다.
+4. Google Apps Script 바깥 shell 때문에 실제 로그인 폼이 iframe 안에 있고 현재 snapshot ref로 입력할 수 없는 경우에만 다음 한 번의 우회를 허용한다.
+   - 안전한 browser_evaluate로 현재 문서의 iframe 실제 src만 읽는다. 클릭/입력/DOM 변경은 evaluate로 하지 않는다.
+   - 읽은 iframe src로 직접 browser_navigate 한다.
+   - 이동 후 반드시 snapshot을 새로 찍는다.
+   - 새 snapshot에 나온 실제 ID/PW 입력칸의 최신 ref만 사용한다.
+5. snapshot이 바뀐 뒤 이전 aria/ref를 다시 사용하지 않는다. 오래된 ref로 fill/click을 재시도하지 않는다.
+6. 로그인 성공 후 다시 최신 snapshot을 찍고, 그 snapshot에서 "Instagram ID" 입력칸과 "중복 확인 / 重複確認" 버튼을 찾는다.
+7. iframe 구조를 장시간 분석하거나 다른 우회법을 연속 실험하지 않는다. 위 직접 폼 URL 진입까지 했는데 로그인/폼을 사용할 수 없으면 실패 종료한다.
+8. playwright_b_browser_run_code_unsafe는 로그인 문제 해결을 포함해 어떤 경우에도 절대 사용하지 않는다.
+
 중복 판정 실행 규칙:
-1. 중복 페이지를 연다.
-2. 로그인 화면이면 사용자 이름과 비밀번호를 직접 입력해 로그인한다.
-3. "Instagram ID" 입력칸과 "중복 확인 / 重複確認" 버튼을 한 번만 찾고, 이후 같은 폼을 계속 사용한다.
-4. 후보는 순서대로 정확히 1회만 처리한다.
+1. 로그인 후 확보한 최신 "Instagram ID" 입력칸과 "중복 확인 / 重複確認" 폼을 사용한다.
+2. 후보는 순서대로 정확히 1회만 처리한다.
    - 입력칸 비우기
    - @ 없이 ID 입력
    - 중복 확인 클릭
-   - 화면 결과 문구 확인
-5. 판정은 3개만 사용한다.
+   - 결과가 갱신되면 최신 snapshot/화면 결과 문구 확인
+3. 화면 갱신 뒤 ref가 무효가 됐다면 새 snapshot에서 같은 폼의 최신 ref를 다시 얻는다. 과거 ref를 재사용하지 않는다.
+4. 판정은 3개만 사용한다.
    - 등록 가능 / 登録可能 → available
    - 이미 등록 / 登録済み → duplicate
    - 보호 목록 / 保護リスト → protected
-6. duplicate 또는 protected가 확인되면 그 후보는 즉시 POST하고 종료한다. Instagram을 열지 않고 다음 후보로 넘어간다.
+5. duplicate 또는 protected가 확인되면 그 후보는 즉시 POST하고 종료한다. Instagram을 열지 않고 다음 후보로 넘어간다.
 
 followers 확인 규칙:
 - followersSource가 "instagram"이고 followers가 숫자면 이미 Instagram에서 확인된 정확값이다. 다시 Instagram을 열지 않는다.
@@ -63,7 +76,8 @@ followers 확인 규칙:
 금지:
 - 후보 재검사
 - 목록에 없는 테스트 계정 입력
-- 결과 형식 연구, iframe/DOM 연구, 추가 실험
+- 결과 형식 연구, iframe/DOM 장시간 연구, 추가 우회 실험
+- 오래된 snapshot ref 재사용
 - playwright_b_browser_run_code_unsafe 사용
 - Temp 파일 생성, cat, 파일 저장 후 --data-binary @파일경로 사용
 - "등록하기 / 登録する" 클릭
