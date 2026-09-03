@@ -6,36 +6,21 @@ $PrimaryModel = if ([string]::IsNullOrWhiteSpace($env:FIXUP_OPENCODE_PRIMARY_MOD
     $env:FIXUP_OPENCODE_PRIMARY_MODEL.Trim()
 }
 
-$InitialSilenceSeconds = 15
-$QuotaCooldownMinutes = 60
-$SilenceCooldownMinutes = 10
-
-if ($env:FIXUP_OPENCODE_PRIMARY_INITIAL_SILENCE_SECONDS -match '^\d+$') {
-    $InitialSilenceSeconds = [Math]::Max(5, [Math]::Min(60, [int]$env:FIXUP_OPENCODE_PRIMARY_INITIAL_SILENCE_SECONDS))
+$CoreScript = Join-Path $PSScriptRoot 'fixup-opencode-core.ps1'
+if (-not (Test-Path -LiteralPath $CoreScript)) {
+    throw "FixUp OpenCode core wrapper not found: $CoreScript"
 }
+
+$QuotaCircuitMinutes = 60
 if ($env:FIXUP_OPENCODE_QUOTA_COOLDOWN_MINUTES -match '^\d+$') {
-    $QuotaCooldownMinutes = [Math]::Max(5, [Math]::Min(1440, [int]$env:FIXUP_OPENCODE_QUOTA_COOLDOWN_MINUTES))
-}
-if ($env:FIXUP_OPENCODE_SILENCE_COOLDOWN_MINUTES -match '^\d+$') {
-    $SilenceCooldownMinutes = [Math]::Max(1, [Math]::Min(120, [int]$env:FIXUP_OPENCODE_SILENCE_COOLDOWN_MINUTES))
+    $QuotaCircuitMinutes = [Math]::Max(5, [Math]::Min(1440, [int]$env:FIXUP_OPENCODE_QUOTA_COOLDOWN_MINUTES))
 }
 
-function Resolve-RealOpenCode {
-    foreach ($Name in @('opencode.exe', 'opencode.cmd', 'opencode.ps1')) {
-        $Command = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $Command -and -not [string]::IsNullOrWhiteSpace($Command.Source)) {
-            return $Command.Source
-        }
-    }
-    throw '실제 OpenCode 실행 파일을 찾지 못했습니다.'
-}
-
-function Stop-ChildTree([int]$TargetPid) {
+function Stop-OwnChildTree([int]$TargetPid) {
     if ($TargetPid -le 0) { return }
     try {
         & taskkill.exe /PID $TargetPid /T /F 2>$null | Out-Null
-    }
-    catch {
+    } catch {
         try { Stop-Process -Id $TargetPid -Force -ErrorAction SilentlyContinue } catch {}
     }
 }
@@ -59,21 +44,12 @@ function Get-NewText([string]$Path, [long]$Offset) {
             $Reader = New-Object System.IO.StreamReader -ArgumentList @($Stream, [Text.Encoding]::UTF8, $true, 4096, $true)
             try { $Text = $Reader.ReadToEnd() } finally { $Reader.Dispose() }
             return [pscustomobject]@{ Text = [string]$Text; Length = $Length }
-        }
-        finally {
+        } finally {
             $Stream.Dispose()
         }
-    }
-    catch {
+    } catch {
         return [pscustomobject]@{ Text = ''; Length = $Offset }
     }
-}
-
-function Get-MeaningfulText([string]$Text) {
-    if ([string]::IsNullOrEmpty($Text)) { return '' }
-    $Clean = $Text -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''
-    $Clean = $Clean -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]', ''
-    return $Clean.Trim()
 }
 
 function Get-ProviderName([string]$Model) {
@@ -85,18 +61,18 @@ function Get-ProviderName([string]$Model) {
 
 function Test-OpenCodeFreeQuota([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(freeusagelimiterror|free usage exceeded|free(?:\s+\w+){0,3}\s+(?:limit|quota|usage)(?:\s+\w+){0,4}\s+(?:reached|exceeded|exhausted)|subscribe to go|add credits https://opencode\.ai/(?:go|zen))'
+    return $Text -match '(?i)(FreeUsageLimitError|Free usage exceeded|Free limit reached|subscribe to Go|add credits https://opencode\.ai/(?:go|zen))'
 }
 
 function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
 
     if ($Provider -eq 'mistral') {
-        return $Text -match '(?i)(\b402\b(?:\s+\w+){0,4}\s+payment required|payment required|(?:credit|credits|balance)(?:\s+\w+){0,4}\s+(?:expired|exhausted|insufficient|depleted)|(?:monthly|workspace|organization)(?:\s+\w+){0,6}\s+(?:spend|spending|usage)(?:\s+\w+){0,4}\s+(?:limit|quota)(?:\s+\w+){0,4}\s+(?:reached|exceeded|exhausted)|(?:spend|spending|usage)(?:\s+\w+){0,4}\s+(?:limit|quota)(?:\s+\w+){0,4}\s+(?:reached|exceeded|exhausted))'
+        return $Text -match '(?i)(\b402\b.{0,80}Payment Required|Payment Required|(?:credit|credits|balance).{0,80}(?:expired|exhausted|insufficient|depleted)|(?:monthly|workspace|organization).{0,100}(?:spend|spending|usage).{0,60}(?:limit|quota).{0,60}(?:reached|exceeded|exhausted))'
     }
 
     if ($Provider -eq 'nvidia') {
-        return $Text -match '(?i)(\b402\b(?:\s+\w+){0,4}\s+payment required|payment required|cloud credits? expired|(?:credit|credits|balance)(?:\s+\w+){0,4}\s+(?:expired|exhausted|insufficient|depleted))'
+        return $Text -match '(?i)(\b402\b.{0,100}(?:Cloud credits expired|Payment Required)|Cloud credits expired|(?:credit|credits|balance).{0,80}(?:expired|exhausted|insufficient|depleted))'
     }
 
     return $false
@@ -104,7 +80,7 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
 
 function Test-ProviderUnavailable([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(upstream request failed(?:\s*:\s*)?.{0,80}endpoint is unavailable|endpoint is unavailable|service unavailable|temporarily unavailable|provider unavailable|resource[_ -]?exhausted|worker local total request limit reached|overloaded|connection (?:reset|refused|lost)|econnreset|econnrefused|etimedout|serialization (?:failure|error)|response.{0,80}missing required.{0,30}\bid\b|stream.{0,80}(?:closed|ended).{0,40}finish_reason|unknown variant.{0,40}finish)'
+    return $Text -match '(?i)(\b50[0234]\b|service unavailable|temporarily unavailable|provider unavailable|endpoint is unavailable|upstream request failed|resource[_ -]?exhausted|worker local total request limit reached|overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection (?:reset|refused|lost)|serialization (?:failure|error)|response.{0,100}missing required.{0,40}\bid\b|stream.{0,100}(?:closed|ended).{0,50}finish_reason|unknown variant.{0,50}finish)'
 }
 
 $Root = Join-Path $env:TEMP 'fixup-scout'
@@ -112,112 +88,58 @@ if (-not (Test-Path -LiteralPath $Root)) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
 }
 
-$PrimaryCircuitFile = Join-Path $Root 'opencode-primary-circuit.json'
-
-function Get-PrimaryCircuit {
-    if (-not (Test-Path -LiteralPath $PrimaryCircuitFile)) { return $null }
-    try {
-        $Raw = Get-Content -LiteralPath $PrimaryCircuitFile -Raw -ErrorAction Stop
-        if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
-        return $Raw | ConvertFrom-Json
-    }
-    catch {
-        return $null
-    }
-}
-
-function Set-PrimaryCircuit([string]$Reason, [int]$Minutes) {
-    $State = [pscustomobject]@{
-        model = $PrimaryModel
-        reason = $Reason
-        expiresAt = [DateTime]::UtcNow.AddMinutes($Minutes).ToString('o')
-    }
-    $Json = $State | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText($PrimaryCircuitFile, $Json, (New-Object Text.UTF8Encoding($false)))
-}
-
-function Clear-PrimaryCircuit {
-    Remove-Item -LiteralPath $PrimaryCircuitFile -Force -ErrorAction SilentlyContinue
-}
-
-function Get-OpenPrimaryCircuit {
-    $State = Get-PrimaryCircuit
-    if ($null -eq $State) { return $null }
-
-    if ([string]$State.model -ne $PrimaryModel) {
-        Clear-PrimaryCircuit
-        return $null
-    }
-
-    $Expires = [DateTime]::MinValue
-    if (-not [DateTime]::TryParse([string]$State.expiresAt, [ref]$Expires)) {
-        Clear-PrimaryCircuit
-        return $null
-    }
-
-    if ($Expires.ToUniversalTime() -le [DateTime]::UtcNow) {
-        Clear-PrimaryCircuit
-        return $null
-    }
-
-    return $State
-}
-
 function Get-ProviderCircuitFile([string]$Provider) {
-    $SafeProvider = if ([string]::IsNullOrWhiteSpace($Provider)) { 'unknown' } else { $Provider -replace '[^a-zA-Z0-9_-]', '_' }
-    return Join-Path $Root ("opencode-provider-$SafeProvider-quota.json")
+    $Safe = if ([string]::IsNullOrWhiteSpace($Provider)) { 'unknown' } else { $Provider -replace '[^a-zA-Z0-9_-]', '_' }
+    return Join-Path $Root ("opencode-provider-$Safe-quota.json")
 }
 
-function Set-ProviderQuotaCircuit([string]$Provider, [int]$Minutes) {
-    if ($Provider -eq 'unknown' -or $Provider -eq 'opencode') { return }
-    $Path = Get-ProviderCircuitFile $Provider
-    $State = [pscustomobject]@{
-        provider = $Provider
-        reason = 'billing_or_credit'
-        expiresAt = [DateTime]::UtcNow.AddMinutes($Minutes).ToString('o')
-    }
-    $Json = $State | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText($Path, $Json, (New-Object Text.UTF8Encoding($false)))
-}
-
-function Get-OpenProviderQuotaCircuit([string]$Provider) {
+function Get-ProviderCircuit([string]$Provider) {
     if ($Provider -eq 'unknown' -or $Provider -eq 'opencode') { return $null }
+
     $Path = Get-ProviderCircuitFile $Provider
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
     try {
-        $Raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
-        $State = $Raw | ConvertFrom-Json
-
+        $State = (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop) | ConvertFrom-Json
         $Expires = [DateTime]::MinValue
         if (-not [DateTime]::TryParse([string]$State.expiresAt, [ref]$Expires)) {
             Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
             return $null
         }
-
         if ($Expires.ToUniversalTime() -le [DateTime]::UtcNow) {
             Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
             return $null
         }
-
         return $State
-    }
-    catch {
+    } catch {
         Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
         return $null
     }
 }
 
-function Clear-ProviderQuotaCircuit([string]$Provider) {
+function Set-ProviderCircuit([string]$Provider) {
+    if ($Provider -eq 'unknown' -or $Provider -eq 'opencode') { return }
+
+    $Path = Get-ProviderCircuitFile $Provider
+    $State = [pscustomobject]@{
+        provider = $Provider
+        reason = 'billing_or_credit'
+        expiresAt = [DateTime]::UtcNow.AddMinutes($QuotaCircuitMinutes).ToString('o')
+    }
+    [IO.File]::WriteAllText(
+        $Path,
+        ($State | ConvertTo-Json -Compress),
+        (New-Object Text.UTF8Encoding($false))
+    )
+}
+
+function Clear-ProviderCircuit([string]$Provider) {
     if ($Provider -eq 'unknown' -or $Provider -eq 'opencode') { return }
     Remove-Item -LiteralPath (Get-ProviderCircuitFile $Provider) -Force -ErrorAction SilentlyContinue
 }
 
-$RealOpenCode = Resolve-RealOpenCode
 $Arguments = @($args)
 $Model = $null
-
 for ($i = 0; $i -lt $Arguments.Count - 1; $i++) {
     if ([string]$Arguments[$i] -eq '--model') {
         $Model = [string]$Arguments[$i + 1]
@@ -226,51 +148,34 @@ for ($i = 0; $i -lt $Arguments.Count - 1; $i++) {
 }
 
 $IsRun = $Arguments.Count -gt 0 -and [string]$Arguments[0] -eq 'run'
+$Provider = Get-ProviderName $Model
+$IsPrimary = $IsRun -and $Model -eq $PrimaryModel
+
+$env:FIXUP_OPENCODE_PRIMARY_MODEL = $PrimaryModel
+
 if (-not $IsRun) {
-    & $RealOpenCode @Arguments
+    & $CoreScript @Arguments
     $Code = $LASTEXITCODE
     if ($null -eq $Code) { $Code = 0 }
     exit $Code
 }
 
-$Provider = Get-ProviderName $Model
-$IsPrimaryRun = $Model -eq $PrimaryModel
-
-if (-not $IsPrimaryRun) {
-    $HasAutoApproval = ($Arguments -contains '--auto') -or ($Arguments -contains '--yolo') -or ($Arguments -contains '--dangerously-skip-permissions')
-    if (-not $HasAutoApproval) {
-        $Arguments += '--auto'
-    }
-}
-
-if ($IsPrimaryRun) {
-    $Circuit = Get-OpenPrimaryCircuit
+if (-not $IsPrimary) {
+    $Circuit = Get-ProviderCircuit $Provider
     if ($null -ne $Circuit) {
-        if ([string]$Circuit.reason -eq 'quota') {
-            [Console]::Error.WriteLine("Free usage exceeded: cached primary quota circuit open until $($Circuit.expiresAt).")
-            exit 173
-        }
-
-        [Console]::Error.WriteLine("Provider unavailable: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
-        exit 175
-    }
-}
-else {
-    $ProviderCircuit = Get-OpenProviderQuotaCircuit $Provider
-    if ($null -ne $ProviderCircuit) {
-        [Console]::Error.WriteLine("Quota exceeded: cached $Provider billing/credit circuit open until $($ProviderCircuit.expiresAt).")
+        [Console]::Error.WriteLine("Quota exceeded: cached provider credits exhausted for $Provider; circuit open until $($Circuit.expiresAt).")
         exit 174
     }
 }
 
 $Id = [Guid]::NewGuid().ToString('N')
-$StdoutFile = Join-Path $Root ("run-$Provider-$Id.stdout.log")
-$StderrFile = Join-Path $Root ("run-$Provider-$Id.stderr.log")
+$StdoutFile = Join-Path $Root ("gate-$Provider-$Id.stdout.log")
+$StderrFile = Join-Path $Root ("gate-$Provider-$Id.stderr.log")
 
-$env:FIXUP_REAL_OPENCODE = $RealOpenCode
+$env:FIXUP_GATE_CORE = $CoreScript
 $ArgsJson = $Arguments | ConvertTo-Json -Compress
-$env:FIXUP_REAL_OPENCODE_ARGS = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ArgsJson))
-$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_REAL_OPENCODE_ARGS)); $a=@($json | ConvertFrom-Json); & $env:FIXUP_REAL_OPENCODE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
+$env:FIXUP_GATE_ARGS = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ArgsJson))
+$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_GATE_ARGS)); $a=@($json | ConvertFrom-Json); & $env:FIXUP_GATE_CORE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
 $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ChildCommand))
 
 try {
@@ -280,20 +185,17 @@ try {
         -RedirectStandardOutput $StdoutFile `
         -RedirectStandardError $StderrFile `
         -PassThru
-}
-catch {
-    [Console]::Error.WriteLine("Provider unavailable: OpenCode start failed for $Model: $($_.Exception.Message)")
-    exit 1
+} catch {
+    [Console]::Error.WriteLine("Provider unavailable: failed to start OpenCode gate for ${Model}: $($_.Exception.Message)")
+    exit 175
 }
 
-$StartedAt = [DateTime]::UtcNow
 $StdoutOffset = 0L
 $StderrOffset = 0L
-$SeenMeaningfulOutput = $false
 
 try {
     while (-not $Child.HasExited) {
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 250
 
         $OutDelta = Get-NewText $StdoutFile $StdoutOffset
         $ErrDelta = Get-NewText $StderrFile $StderrOffset
@@ -302,26 +204,22 @@ try {
 
         $Combined = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
 
-        if ($IsPrimaryRun -and (Test-OpenCodeFreeQuota $Combined)) {
-            Set-PrimaryCircuit 'quota' $QuotaCooldownMinutes
-            Stop-ChildTree $Child.Id
-            [Console]::Error.WriteLine("Free usage exceeded: primary model quota exhausted; circuit cached for $QuotaCooldownMinutes minutes.")
+        if ($IsPrimary -and (Test-OpenCodeFreeQuota $Combined)) {
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine('Free usage exceeded: primary model quota exhausted.')
             exit 173
         }
 
         if (Test-ProviderBillingQuota $Provider $Combined) {
-            Set-ProviderQuotaCircuit $Provider $QuotaCooldownMinutes
-            Stop-ChildTree $Child.Id
-            [Console]::Error.WriteLine("Quota exceeded: $Provider billing/credits unavailable; provider circuit cached for $QuotaCooldownMinutes minutes.")
+            Set-ProviderCircuit $Provider
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine("Quota exceeded: provider credits exhausted for $Provider.")
             exit 174
         }
 
         if (Test-ProviderUnavailable $Combined) {
-            if ($IsPrimaryRun) {
-                Set-PrimaryCircuit 'provider_unavailable' $SilenceCooldownMinutes
-            }
-            Stop-ChildTree $Child.Id
-            [Console]::Error.WriteLine("Provider unavailable: $Model upstream/capacity/protocol failure.")
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
             exit 175
         }
 
@@ -331,17 +229,6 @@ try {
         if (-not [string]::IsNullOrEmpty([string]$ErrDelta.Text)) {
             [Console]::Error.Write([string]$ErrDelta.Text)
         }
-
-        if (-not [string]::IsNullOrWhiteSpace((Get-MeaningfulText $Combined))) {
-            $SeenMeaningfulOutput = $true
-        }
-
-        if ($IsPrimaryRun -and -not $SeenMeaningfulOutput -and ([DateTime]::UtcNow - $StartedAt).TotalSeconds -ge $InitialSilenceSeconds) {
-            Set-PrimaryCircuit 'initial_silence' $SilenceCooldownMinutes
-            Stop-ChildTree $Child.Id
-            [Console]::Error.WriteLine("Provider unavailable: primary model produced no meaningful output for $InitialSilenceSeconds seconds; short circuit cached for $SilenceCooldownMinutes minutes.")
-            exit 1
-        }
     }
 
     try { $Child.WaitForExit() } catch {}
@@ -350,23 +237,19 @@ try {
     $ErrDelta = Get-NewText $StderrFile $StderrOffset
     $Tail = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
 
-    if ($IsPrimaryRun -and (Test-OpenCodeFreeQuota $Tail)) {
-        Set-PrimaryCircuit 'quota' $QuotaCooldownMinutes
-        [Console]::Error.WriteLine("Free usage exceeded: primary model quota exhausted; circuit cached for $QuotaCooldownMinutes minutes.")
+    if ($IsPrimary -and (Test-OpenCodeFreeQuota $Tail)) {
+        [Console]::Error.WriteLine('Free usage exceeded: primary model quota exhausted.')
         exit 173
     }
 
     if (Test-ProviderBillingQuota $Provider $Tail) {
-        Set-ProviderQuotaCircuit $Provider $QuotaCooldownMinutes
-        [Console]::Error.WriteLine("Quota exceeded: $Provider billing/credits unavailable; provider circuit cached for $QuotaCooldownMinutes minutes.")
+        Set-ProviderCircuit $Provider
+        [Console]::Error.WriteLine("Quota exceeded: provider credits exhausted for $Provider.")
         exit 174
     }
 
     if (Test-ProviderUnavailable $Tail) {
-        if ($IsPrimaryRun) {
-            Set-PrimaryCircuit 'provider_unavailable' $SilenceCooldownMinutes
-        }
-        [Console]::Error.WriteLine("Provider unavailable: $Model upstream/capacity/protocol failure.")
+        [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
         exit 175
     }
 
@@ -380,19 +263,13 @@ try {
     $ExitCode = 1
     try { $ExitCode = [int]$Child.ExitCode } catch {}
 
-    if ($ExitCode -eq 0) {
-        if ($IsPrimaryRun) {
-            Clear-PrimaryCircuit
-        }
-        else {
-            Clear-ProviderQuotaCircuit $Provider
-        }
+    if ($ExitCode -eq 0 -and -not $IsPrimary) {
+        Clear-ProviderCircuit $Provider
     }
 
     exit $ExitCode
-}
-finally {
+} finally {
     Remove-Item -LiteralPath $StdoutFile, $StderrFile -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:FIXUP_REAL_OPENCODE -ErrorAction SilentlyContinue
-    Remove-Item Env:FIXUP_REAL_OPENCODE_ARGS -ErrorAction SilentlyContinue
+    Remove-Item Env:FIXUP_GATE_CORE -ErrorAction SilentlyContinue
+    Remove-Item Env:FIXUP_GATE_ARGS -ErrorAction SilentlyContinue
 }
