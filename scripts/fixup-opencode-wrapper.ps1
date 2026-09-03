@@ -12,8 +12,12 @@ if (-not (Test-Path -LiteralPath $CoreScript)) {
 }
 
 $QuotaCircuitMinutes = 60
+$SemanticStallSeconds = 75
 if ($env:FIXUP_OPENCODE_QUOTA_COOLDOWN_MINUTES -match '^\d+$') {
     $QuotaCircuitMinutes = [Math]::Max(5, [Math]::Min(1440, [int]$env:FIXUP_OPENCODE_QUOTA_COOLDOWN_MINUTES))
+}
+if ($env:FIXUP_OPENCODE_STALL_SECONDS -match '^\d+$') {
+    $SemanticStallSeconds = [Math]::Max(30, [Math]::Min(600, [int]$env:FIXUP_OPENCODE_STALL_SECONDS))
 }
 
 function Stop-OwnChildTree([int]$TargetPid) {
@@ -61,18 +65,18 @@ function Get-ProviderName([string]$Model) {
 
 function Test-OpenCodeFreeQuota([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(FreeUsageLimitError|Free usage exceeded|Free limit reached|subscribe to Go|add credits https://opencode\.ai/(?:go|zen))'
+    return $Text -match '(?i)(FreeUsageLimitError|Free usage exceeded|Free limit reached|subscribe to Go|add credits https://opencode\.ai/(?:go|zen)|\b429\b.{0,120}rate limit|rate limit exceeded.{0,80}try again later)'
 }
 
 function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
 
     if ($Provider -eq 'mistral') {
-        return $Text -match '(?i)(\b402\b.{0,80}Payment Required|Payment Required|(?:credit|credits|balance).{0,80}(?:expired|exhausted|insufficient|depleted)|(?:monthly|workspace|organization).{0,100}(?:spend|spending|usage).{0,60}(?:limit|quota).{0,60}(?:reached|exceeded|exhausted))'
+        return $Text -match '(?i)(\b402\b.{0,100}Payment Required|Payment Required|(?:credit|credits|balance).{0,100}(?:expired|exhausted|insufficient|depleted)|(?:monthly|workspace|organization|spend|spending|usage).{0,120}(?:limit|quota|budget).{0,80}(?:reached|exceeded|exhausted|blocked)|(?:limit|quota|budget).{0,80}(?:reached|exceeded|exhausted).{0,100}(?:monthly|workspace|organization|spend|spending|usage))'
     }
 
     if ($Provider -eq 'nvidia') {
-        return $Text -match '(?i)(\b402\b.{0,100}(?:Cloud credits expired|Payment Required)|Cloud credits expired|(?:credit|credits|balance).{0,80}(?:expired|exhausted|insufficient|depleted))'
+        return $Text -match '(?i)(\b402\b.{0,120}(?:Cloud credits expired|Payment Required)|Cloud credits expired|(?:credit|credits|balance).{0,100}(?:expired|exhausted|insufficient|depleted))'
     }
 
     return $false
@@ -81,6 +85,11 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
 function Test-ProviderUnavailable([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
     return $Text -match '(?i)(\b50[0234]\b|service unavailable|temporarily unavailable|provider unavailable|endpoint is unavailable|upstream request failed|resource[_ -]?exhausted|worker local total request limit reached|overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection (?:reset|refused|lost)|serialization (?:failure|error)|response.{0,100}missing required.{0,40}\bid\b|stream.{0,100}(?:closed|ended).{0,50}finish_reason|unknown variant.{0,50}finish)'
+}
+
+function Test-SemanticProgress([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return $Text -match '(?im)^\s*\{.*"type"\s*:\s*"(?:tool_use|text)".*\}\s*$'
 }
 
 $Root = Join-Path $env:TEMP 'fixup-scout'
@@ -160,6 +169,18 @@ if (-not $IsRun) {
     exit $Code
 }
 
+$HasFormat = $false
+for ($i = 0; $i -lt $Arguments.Count; $i++) {
+    $ArgumentText = [string]$Arguments[$i]
+    if ($ArgumentText -eq '--format' -or $ArgumentText -like '--format=*') {
+        $HasFormat = $true
+        break
+    }
+}
+if (-not $HasFormat) {
+    $Arguments += @('--format', 'json')
+}
+
 if (-not $IsPrimary) {
     $Circuit = Get-ProviderCircuit $Provider
     if ($null -ne $Circuit) {
@@ -173,9 +194,9 @@ $StdoutFile = Join-Path $Root ("gate-$Provider-$Id.stdout.log")
 $StderrFile = Join-Path $Root ("gate-$Provider-$Id.stderr.log")
 
 $env:FIXUP_GATE_CORE = $CoreScript
-$ArgsJson = $Arguments | ConvertTo-Json -Compress
+$ArgsJson = ConvertTo-Json -InputObject @($Arguments) -Compress
 $env:FIXUP_GATE_ARGS = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ArgsJson))
-$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_GATE_ARGS)); $a=@($json | ConvertFrom-Json); & $env:FIXUP_GATE_CORE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
+$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_GATE_ARGS)); $parsed=ConvertFrom-Json -InputObject $json; $a=@($parsed); & $env:FIXUP_GATE_CORE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
 $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ChildCommand))
 
 try {
@@ -186,12 +207,13 @@ try {
         -RedirectStandardError $StderrFile `
         -PassThru
 } catch {
-    [Console]::Error.WriteLine("Provider unavailable: failed to start OpenCode gate for ${Model}: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("Provider unavailable: failed to start OpenCode gate for ${Model}. $($_.Exception.Message)")
     exit 175
 }
 
 $StdoutOffset = 0L
 $StderrOffset = 0L
+$LastSemanticAt = [DateTime]::UtcNow
 
 try {
     while (-not $Child.HasExited) {
@@ -206,7 +228,7 @@ try {
 
         if ($IsPrimary -and (Test-OpenCodeFreeQuota $Combined)) {
             Stop-OwnChildTree $Child.Id
-            [Console]::Error.WriteLine('Free usage exceeded: primary model quota exhausted.')
+            [Console]::Error.WriteLine('Free usage exceeded: primary model quota/rate limit exhausted.')
             exit 173
         }
 
@@ -223,11 +245,21 @@ try {
             exit 175
         }
 
+        if (Test-SemanticProgress $Combined) {
+            $LastSemanticAt = [DateTime]::UtcNow
+        }
+
         if (-not [string]::IsNullOrEmpty([string]$OutDelta.Text)) {
             [Console]::Out.Write([string]$OutDelta.Text)
         }
         if (-not [string]::IsNullOrEmpty([string]$ErrDelta.Text)) {
             [Console]::Error.Write([string]$ErrDelta.Text)
+        }
+
+        if (([DateTime]::UtcNow - $LastSemanticAt).TotalSeconds -ge $SemanticStallSeconds) {
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine("Provider unavailable: no semantic tool/text progress for $SemanticStallSeconds seconds on $Model; possible internal retry, quota wait, or provider hang.")
+            exit 175
         }
     }
 
@@ -238,7 +270,7 @@ try {
     $Tail = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
 
     if ($IsPrimary -and (Test-OpenCodeFreeQuota $Tail)) {
-        [Console]::Error.WriteLine('Free usage exceeded: primary model quota exhausted.')
+        [Console]::Error.WriteLine('Free usage exceeded: primary model quota/rate limit exhausted.')
         exit 173
     }
 
