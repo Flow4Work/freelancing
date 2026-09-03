@@ -76,7 +76,8 @@ $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
 $ContactsJson = ${psQuote(contactsJson)}
-$Contacts = @($ContactsJson | ConvertFrom-Json)
+$ParsedContacts = $ContactsJson | ConvertFrom-Json
+$Contacts = @($ParsedContacts | ForEach-Object { $_ })
 $ResultUrl = "http://localhost:3000/api/dm/opencode-result"
 
 function Set-DmFailed($Contact, [string]$Message) {
