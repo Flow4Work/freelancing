@@ -1,5 +1,5 @@
 import type { SearchCategory } from "@/lib/discovery/types";
-import { normalizeHandle } from "@/lib/discovery/instagram";
+import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { getSupabaseAdmin } from "./admin";
 
 export type DmOpenCodeStatus = "pending" | "success" | "failed";
@@ -36,7 +36,9 @@ export async function createApprovedDmContacts(inputs: ApprovedDmContactInput[])
 
   const normalizedInputs = inputs.map((input) => {
     const handle = normalizeHandle(input.handle);
-    if (!handle) throw new Error("Instagram ID가 올바르지 않습니다.");
+    if (input.handle !== handle || !isValidHandle(handle) || input.handle.includes("\\")) {
+      throw new Error(`Instagram ID가 올바르지 않습니다: ${JSON.stringify(input.handle)}`);
+    }
     const japaneseText = input.japaneseText;
     const koreanText = input.koreanText.trim();
     if (!japaneseText.trim()) throw new Error(`@${handle} 승인 일본어 DM이 비어 있습니다.`);
@@ -149,7 +151,9 @@ export async function recordDmOpenCodeResult(input: {
 }) {
   const current = await getDmContact(input.id);
   const handle = normalizeHandle(input.handle);
-  if (!handle || handle !== current.handle) throw new Error("DM 연락 이력의 Instagram ID가 일치하지 않습니다.");
+  if (input.handle !== handle || !isValidHandle(handle) || input.handle.includes("\\") || handle !== current.handle) {
+    throw new Error("DM 연락 이력의 Instagram ID가 일치하지 않습니다.");
+  }
   if (current.sentAt) throw new Error("이미 발송 완료된 DM 연락 이력입니다.");
   if (current.openCodeStatus === "success") return current;
 
