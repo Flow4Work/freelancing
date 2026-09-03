@@ -1,24 +1,46 @@
 import { checkAccountAvailabilities } from "./account-availability";
-import { FOOD_REVIEW_SIGNALS, getQueryPlan } from "./query-plan";
+import { FOOD_REVIEW_SIGNALS, getGoogleQueryPlan, getQueryPlan } from "./query-plan";
 import { extractInstagramCandidate, profileUrl, type InstagramCandidateExtraction } from "./instagram";
 import { assessCandidate } from "./quality";
-import { getConfiguredProviders } from "./providers";
-import type { CandidateStatus, DiscoveryCandidate, DiscoveryResponse, RawSearchResult, SearchCategory, SearchProvider } from "./types";
-import { findExistingHandles, mergeWithStoredReviewEvidence, saveCandidates } from "@/lib/supabase/candidates";
+import { getConfiguredGoogleProviders, getConfiguredProviders } from "./providers";
+import type {
+  CandidateStatus,
+  DiscoveryCandidate,
+  DiscoveryResponse,
+  DiscoverySource,
+  GoogleSearchProviderName,
+  RawSearchResult,
+  SearchCategory,
+  SearchProvider,
+  SearchProviderName,
+} from "./types";
+import { findExistingHandles, saveCandidates } from "@/lib/supabase/candidates";
 import {
   beginDiscoveryRun,
   completeDiscoveryRun,
   countManualExcludedHandles,
-  findStoredReviewHandles,
 } from "@/lib/supabase/discovery-runs";
 import { isSupabaseConfigured } from "@/lib/supabase/admin";
 
 export class NoSearchProvidersError extends Error {}
+export class NoGoogleSearchProvidersError extends Error {}
+export class GoogleSearchFailedError extends Error {}
 
 type DiscoverInput = { category: SearchCategory; targetCount: number };
 type ExtractedEvidence = { result: RawSearchResult; extraction: InstagramCandidateExtraction };
 type GroupedEvidence = { grouped: Map<string, ExtractedEvidence[]>; filteredNoise: number };
 type SearchOutcome = { results: RawSearchResult[]; failureCount: number };
+type GoogleProviderOutcome = SearchOutcome & { successCount: number; queriesRun: number };
+type ProcessInput = {
+  source: DiscoverySource;
+  category: SearchCategory;
+  targetCount: number;
+  runNo: number;
+  rawResults: RawSearchResult[];
+  queriesRun: number;
+  providerFailureCount: number;
+  providersUsed: SearchProviderName[];
+};
 
 export async function discoverCreators({ category, targetCount }: DiscoverInput): Promise<DiscoveryResponse> {
   const providers = getConfiguredProviders();
@@ -28,7 +50,6 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
   const queries = getQueryPlan(category, runNo);
   const concurrency = clamp(Number(process.env.DISCOVERY_CONCURRENCY ?? 4), 1, 8);
   const rawResults: RawSearchResult[] = [];
-  const warnings: string[] = [];
   let queriesRun = 0;
   let providerFailureCount = 0;
 
@@ -45,68 +66,121 @@ export async function discoverCreators({ category, targetCount }: DiscoverInput)
     }
   }
 
-  const groupedBatch = groupRawEvidence(rawResults);
+  return processDiscoveryResults({
+    source: "standard",
+    category,
+    targetCount,
+    runNo,
+    rawResults,
+    queriesRun,
+    providerFailureCount,
+    providersUsed: providers.map((provider) => provider.name),
+  });
+}
+
+export async function discoverGoogleCreators({ category, targetCount }: DiscoverInput): Promise<DiscoveryResponse> {
+  const providers = getConfiguredGoogleProviders();
+  if (!providers.length) throw new NoGoogleSearchProvidersError();
+
+  const runNo = await beginDiscoveryRun(category);
+  const concurrency = clamp(Number(process.env.DISCOVERY_CONCURRENCY ?? 4), 1, 8);
+  const outcomes = await Promise.all(providers.map(async (provider): Promise<GoogleProviderOutcome> => {
+    if (provider.name !== "serper" && provider.name !== "serpapi") {
+      return { results: [], failureCount: 0, successCount: 0, queriesRun: 0 };
+    }
+    const queries = getGoogleQueryPlan(category, runNo, provider.name as GoogleSearchProviderName);
+    return searchGoogleProvider(provider, queries, concurrency);
+  }));
+
+  const rawResults = outcomes.flatMap((outcome) => outcome.results);
+  const queriesRun = outcomes.reduce((sum, outcome) => sum + outcome.queriesRun, 0);
+  const providerFailureCount = outcomes.reduce((sum, outcome) => sum + outcome.failureCount, 0);
+  const successCount = outcomes.reduce((sum, outcome) => sum + outcome.successCount, 0);
+
+  if (successCount === 0) throw new GoogleSearchFailedError();
+
+  return processDiscoveryResults({
+    source: "google",
+    category,
+    targetCount,
+    runNo,
+    rawResults,
+    queriesRun,
+    providerFailureCount,
+    providersUsed: providers.map((provider) => provider.name),
+  });
+}
+
+async function processDiscoveryResults(input: ProcessInput): Promise<DiscoveryResponse> {
+  const warnings: string[] = [];
+  const preparedResults = input.source === "google" ? dedupeRawResultsByUrl(input.rawResults) : input.rawResults;
+  const groupedBatch = groupRawEvidence(preparedResults);
   const groupedHandles = [...groupedBatch.grouped.keys()];
   const existing = await findExistingHandles(groupedHandles);
-  const manualExcludedCount = await countManualExcludedHandles(category, [...existing]);
+  const manualExcludedCount = await countManualExcludedHandles(input.category, [...existing]);
   const freshGrouped = new Map(
     [...groupedBatch.grouped.entries()].filter(([handle]) => !existing.has(handle)),
   );
-  const storedReviewHandles = await findStoredReviewHandles(category, [...freshGrouped.keys()]);
 
-  // Instagram 원본에는 프로필 존재 여부만 가볍게 확인한다.
-  // BIO/팔로워/Reels는 이 단계에서 열지 않고, 접근 실패는 없는 계정으로 단정하지 않는다.
-  // 단, Exa/Tavily 검색 결과에 팔로워 수가 명시된 경우에는 선택 참고값으로만 보존한다.
-  const candidates = await groupedToCandidates(freshGrouped, category);
-  const enriched = await mergeWithStoredReviewEvidence(candidates, category);
-  const rejected = enriched.filter((candidate) => candidate.candidateStatus === "hard_reject");
-  const viable = enriched.filter((candidate) => candidate.candidateStatus !== "hard_reject");
+  // DB에 한 번이라도 저장된 handle은 여기까지 오지 않는다.
+  // 신규 handle만 기존 account availability/품질 판정과 동일 저장 로직을 탄다.
+  const candidates = await groupedToCandidates(freshGrouped, input.category);
+  const rejected = candidates.filter((candidate) => candidate.candidateStatus === "hard_reject");
+  const viable = candidates.filter((candidate) => candidate.candidateStatus !== "hard_reject");
 
-  await saveCandidates(enriched);
+  await saveCandidates(candidates);
 
   const ranked = viable.sort(compareCandidates);
-  const selected = ranked.slice(0, targetCount);
+  const selected = ranked.slice(0, input.targetCount);
   const qualifiedCount = selected.filter((candidate) => candidate.candidateStatus === "search_qualified").length;
   const reviewCount = selected.filter((candidate) => candidate.candidateStatus === "needs_review").length;
+  const recommendedCount = candidates.filter((candidate) => candidate.candidateStatus === "search_qualified" || candidate.candidateStatus === "qualified").length;
+  const needsReviewCount = candidates.filter((candidate) => candidate.candidateStatus === "needs_review").length;
   const filteredNoise = groupedBatch.filteredNoise + rejected.length;
-  const newSavedCount = enriched.filter((candidate) => !storedReviewHandles.has(candidate.handle)).length;
-  const evidenceEnrichedCount = enriched.length - newSavedCount;
 
-  await completeDiscoveryRun(category, runNo, {
-    targetCount,
-    queryCount: queriesRun,
-    exaRawCount: rawResults.filter((result) => result.provider === "exa").length,
-    tavilyRawCount: rawResults.filter((result) => result.provider === "tavily").length,
-    rawUrlCount: new Set(rawResults.map((result) => result.url)).size,
-    extractedResultCount: rawResults.length - groupedBatch.filteredNoise,
+  await completeDiscoveryRun(input.category, input.runNo, {
+    targetCount: input.targetCount,
+    queryCount: input.queriesRun,
+    exaRawCount: input.rawResults.filter((result) => result.provider === "exa").length,
+    tavilyRawCount: input.rawResults.filter((result) => result.provider === "tavily").length,
+    rawUrlCount: new Set(preparedResults.map((result) => result.url)).size,
+    extractedResultCount: preparedResults.length - groupedBatch.filteredNoise,
     uniqueHandleCount: groupedBatch.grouped.size,
     existingCandidateCount: existing.size,
     hardRejectCount: rejected.length,
     manualExcludedCount,
     otherFilteredCount: groupedBatch.filteredNoise,
-    newSavedCount,
-    evidenceEnrichedCount,
+    newSavedCount: candidates.length,
+    evidenceEnrichedCount: 0,
     finalAddedCount: selected.length,
-    providerFailureCount,
+    providerFailureCount: input.providerFailureCount,
   });
 
-  if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 중복 기록은 저장되지 않습니다.");
-  if (selected.length < targetCount) warnings.push(`이번 검색에서는 신규/보강 후보 ${selected.length}명만 확보했습니다. 다음 검색 lane에서 이어서 찾습니다.`);
+  if (!isSupabaseConfigured()) warnings.push("Supabase가 설정되지 않아 실행 간 DB 기존 후보 제외가 적용되지 않습니다.");
+  if (selected.length < input.targetCount) warnings.push(`이번 검색에서는 신규 후보 ${selected.length}명만 확보했습니다. 다음 검색 lane에서 이어서 찾습니다.`);
   if (reviewCount > 0) warnings.push(`${reviewCount}명은 계정 존재 또는 핵심 판단 근거를 추가 확인해야 합니다.`);
-  if (providerFailureCount > 0) warnings.push(`검색 provider 호출 ${providerFailureCount}회가 실패해 fallback 또는 빈 결과로 처리되었습니다.`);
+  if (input.providerFailureCount > 0) warnings.push(`검색 provider 호출 ${input.providerFailureCount}회가 실패했지만 성공한 provider 결과는 정상 처리했습니다.`);
 
   return {
-    category,
-    targetCount,
-    runNo,
+    source: input.source,
+    category: input.category,
+    targetCount: input.targetCount,
+    runNo: input.runNo,
     candidates: selected,
     qualifiedCount,
     reviewCount,
     filteredNoise,
     skippedDuplicates: existing.size,
-    queriesRun,
-    providersUsed: providers.map((provider) => provider.name),
+    queriesRun: input.queriesRun,
+    providersUsed: input.providersUsed,
     warnings,
+    sourceResultCount: input.rawResults.length,
+    instagramHandleCount: groupedBatch.grouped.size,
+    existingExcludedCount: existing.size,
+    newCandidateCount: freshGrouped.size,
+    recommendedCount,
+    needsReviewCount,
+    excludedCount: rejected.length,
   };
 }
 
@@ -124,6 +198,52 @@ async function searchWithFallback(query: string, providers: SearchProvider[], st
   }
   console.warn("search_query_failed", { query, error: lastError });
   return { results: [], failureCount };
+}
+
+async function searchGoogleProvider(provider: SearchProvider, queries: string[], concurrency: number): Promise<GoogleProviderOutcome> {
+  const results: RawSearchResult[] = [];
+  let failureCount = 0;
+  let successCount = 0;
+
+  for (let offset = 0; offset < queries.length; offset += concurrency) {
+    const wave = queries.slice(offset, offset + concurrency);
+    const settled = await Promise.allSettled(wave.map((query) => provider.search(query, 10)));
+    for (let index = 0; index < settled.length; index += 1) {
+      const result = settled[index];
+      if (result.status === "fulfilled") {
+        successCount += 1;
+        results.push(...result.value);
+      } else {
+        failureCount += 1;
+        console.warn("google_search_query_failed", { provider: provider.name, query: wave[index] });
+      }
+    }
+  }
+
+  return { results, failureCount, successCount, queriesRun: queries.length };
+}
+
+function dedupeRawResultsByUrl(results: RawSearchResult[]) {
+  const seen = new Set<string>();
+  const deduped: RawSearchResult[] = [];
+
+  for (const result of results) {
+    const key = normalizeResultUrl(result.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(result);
+  }
+  return deduped;
+}
+
+function normalizeResultUrl(value: string) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
 }
 
 function groupRawEvidence(results: RawSearchResult[]): GroupedEvidence {

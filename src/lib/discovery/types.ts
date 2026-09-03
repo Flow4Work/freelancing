@@ -1,5 +1,7 @@
 export type SearchCategory = "beauty" | "food";
-export type SearchProviderName = "exa" | "tavily";
+export type DiscoverySource = "standard" | "google";
+export type SearchProviderName = "exa" | "tavily" | "serper" | "serpapi";
+export type GoogleSearchProviderName = Extract<SearchProviderName, "serper" | "serpapi">;
 export type CandidateStatus = "search_qualified" | "needs_review" | "hard_reject" | "qualified";
 export type VerificationStatus = "needs_instagram" | "verified" | "insufficient" | "private" | "rejected" | "hard_reject";
 export type ReelMetricsStatus = "not_checked" | "ready" | "insufficient";
@@ -73,6 +75,7 @@ export type DiscoveryCandidate = {
 };
 
 export type DiscoveryResponse = {
+  source: DiscoverySource;
   category: SearchCategory;
   targetCount: number;
   runNo: number;
@@ -84,6 +87,13 @@ export type DiscoveryResponse = {
   queriesRun: number;
   providersUsed: SearchProviderName[];
   warnings: string[];
+  sourceResultCount: number;
+  instagramHandleCount: number;
+  existingExcludedCount: number;
+  newCandidateCount: number;
+  recommendedCount: number;
+  needsReviewCount: number;
+  excludedCount: number;
 };
 
 export type CandidateListResponse = {

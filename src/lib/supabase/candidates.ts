@@ -5,8 +5,6 @@ import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { assessCandidate } from "@/lib/discovery/quality";
 import { getSupabaseAdmin } from "./admin";
 
-const DUPLICATE_BLOCKING_STATUSES = new Set(["search_qualified", "hard_reject", "qualified", "private", "contacted"]);
-const FINAL_VERIFICATION_STATUSES = new Set(["verified", "insufficient", "private", "rejected", "hard_reject"]);
 const KNOWN_DISCOVERY_STATUSES = new Set(["discovered", "search_qualified", "needs_review", "hard_reject", "qualified", "private", "contacted"]);
 const KNOWN_VERIFICATION_STATUSES = new Set<VerificationStatus>(["needs_instagram", "verified", "insufficient", "private", "rejected", "hard_reject"]);
 const KNOWN_DUPLICATE_STATUSES = new Set<DuplicateCheckStatus>(["not_checked", "available", "duplicate", "protected", "unknown"]);
@@ -17,29 +15,28 @@ export async function findExistingHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
 
-  const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
-  const blocked = new Set<string>();
-  const { data, error } = await supabase
-    .from("creator_candidates")
-    .select("normalized_handle, discovery_status, verification_status")
-    .in("normalized_handle", normalized);
+  const normalized = [...new Set(handles.map((handle) => normalizeHandle(handle)).filter(Boolean))];
+  const existing = new Set<string>();
 
-  if (error) {
-    console.warn("supabase_duplicate_check_failed", error.message);
-  } else {
+  for (let offset = 0; offset < normalized.length; offset += 200) {
+    const batch = normalized.slice(offset, offset + 200);
+    const { data, error } = await supabase
+      .from("creator_candidates")
+      .select("normalized_handle")
+      .in("normalized_handle", batch);
+
+    if (error) {
+      console.error("supabase_existing_handle_check_failed", error.message);
+      throw new Error("기존 후보 DB 확인에 실패해 중복 방지를 위해 검색을 중단했습니다.");
+    }
+
     for (const row of data ?? []) {
-      if (
-        DUPLICATE_BLOCKING_STATUSES.has(String(row.discovery_status))
-        || FINAL_VERIFICATION_STATUSES.has(String(row.verification_status))
-      ) {
-        blocked.add(String(row.normalized_handle));
-      }
+      const handle = normalizeHandle(row.normalized_handle);
+      if (handle) existing.add(handle);
     }
   }
 
-  const contacted = await findContactedHandles(normalized);
-  contacted.forEach((handle) => blocked.add(handle));
-  return blocked;
+  return existing;
 }
 
 export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandidate[], category: SearchCategory) {
@@ -422,7 +419,8 @@ function numberOrNull(value: unknown) {
 }
 
 function normalizeProvider(value: unknown): SearchProviderName {
-  return value === "tavily" ? "tavily" : "exa";
+  if (value === "tavily" || value === "serper" || value === "serpapi") return value;
+  return "exa";
 }
 
 function normalizeDmProvider(value: unknown): DmProvider | null {

@@ -129,7 +129,7 @@ const PROGRESS_STAGES = [
   "계정 생존 확인 중",
   "계정별 검색 근거 합치는 중",
   "일본 타깃·한국 접점 확인 중",
-  "신규/보강 후보 저장 중",
+  "신규 후보 저장 중",
 ];
 
 const RECOMMENDED_BADGE_STYLE = { color: "#d6336c", background: "#fff0f6" };
@@ -146,6 +146,7 @@ export function DiscoveryConsole() {
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [automationLoading, setAutomationLoading] = useState(false);
   const [dmLoading, setDmLoading] = useState(false);
   const [dmRegeneratingHandle, setDmRegeneratingHandle] = useState<string | null>(null);
@@ -163,6 +164,9 @@ export function DiscoveryConsole() {
   const [listLoading, setListLoading] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+  const [discoverySummary, setDiscoverySummary] = useState<string | null>(null);
+  const [googleDiscoverySummary, setGoogleDiscoverySummary] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [automationWatchUntil, setAutomationWatchUntil] = useState<number | null>(null);
   const [watchedAutomationJobId, setWatchedAutomationJobId] = useState<string | null>(null);
@@ -187,6 +191,10 @@ export function DiscoveryConsole() {
     setHistoryOpen(false);
     setHistoryItems([]);
     setExpandedHistoryId(null);
+    setError(null);
+    setGoogleError(null);
+    setDiscoverySummary(null);
+    setGoogleDiscoverySummary(null);
     const restoredDmSession = readDmSession(category);
     if (restoredDmSession) {
       setDmDrafts(restoredDmSession.drafts);
@@ -415,24 +423,54 @@ export function DiscoveryConsole() {
   async function runDiscovery() {
     setLoading(true);
     setError(null);
+    setDiscoverySummary(null);
     setToast(null);
     try {
       const response = await fetch("/api/discovery", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, targetCount }),
+        body: JSON.stringify({ category, targetCount, source: "standard" }),
       });
       const payload = await response.json() as DiscoveryResponse & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "검색에 실패했습니다.");
       await reloadCandidates(category);
       if (historyOpen) setHistoryItems(await fetchHistoryItems());
-      setToast({ kind: "success", message: `${payload.runNo}차 검색 · ${payload.candidates.length}명 신규/근거 보강` });
+      const summary = discoveryResultSummary(payload, "기존 검색");
+      setDiscoverySummary(summary);
+      setToast({ kind: "success", message: summary });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "검색에 실패했습니다.";
       setError(message);
       setToast({ kind: "error", message });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runGoogleDiscovery() {
+    setGoogleLoading(true);
+    setGoogleError(null);
+    setGoogleDiscoverySummary(null);
+    setToast(null);
+    try {
+      const response = await fetch("/api/discovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, targetCount, source: "google" }),
+      });
+      const payload = await response.json() as DiscoveryResponse & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Google 검색에 실패했습니다.");
+      await reloadCandidates(category);
+      if (historyOpen) setHistoryItems(await fetchHistoryItems());
+      const summary = discoveryResultSummary(payload, "Google 검색");
+      setGoogleDiscoverySummary(summary);
+      setToast({ kind: "success", message: summary });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Google 검색에 실패했습니다.";
+      setGoogleError(message);
+      setToast({ kind: "error", message });
+    } finally {
+      setGoogleLoading(false);
     }
   }
 
@@ -890,7 +928,8 @@ export function DiscoveryConsole() {
                 </div>
               )}
             </div>
-            <button className="primary" onClick={runDiscovery} disabled={loading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
+            <button className="primary" onClick={runDiscovery} disabled={loading || googleLoading}>{loading ? "찾는 중…" : candidates.length ? "+ 추가 찾기" : "후보 찾기"}</button>
+            <button className="secondary" onClick={runGoogleDiscovery} disabled={googleLoading || loading}>{googleLoading ? "Google 찾는 중…" : "Google 추가 찾기"}</button>
           </div>
         </div>
 
@@ -900,9 +939,18 @@ export function DiscoveryConsole() {
             <span>{PROGRESS_STAGES[progressStage]}</span>
           </div>
         )}
+        {googleLoading && (
+          <div className="progress-box" aria-live="polite">
+            <div className="progress-track"><div className="progress-bar" /></div>
+            <span>Serper + SerpApi 독립 검색 · 신규 Instagram 후보 판정 중</span>
+          </div>
+        )}
 
         {health && !health.quality?.ok && <div className="notice error">품질 규칙 자체 점검 실패: {health.quality?.failures.join(", ")}</div>}
-        {error && <div className="notice error">{error}</div>}
+        {error && <div className="notice error">기존 검색: {error}</div>}
+        {googleError && <div className="notice error">Google 검색: {googleError}</div>}
+        {discoverySummary && <div className="notice">{discoverySummary}</div>}
+        {googleDiscoverySummary && <div className="notice">{googleDiscoverySummary}</div>}
       </section>
 
       <section className="card results">
@@ -1272,7 +1320,7 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
 }
 
 function historyTitle(item: AutomationHistoryItem) {
-  if (item.mode === "discovery") return `후보 찾기 ${item.runNo ?? "?"}차 · ${item.destinationCount}명 신규/근거 보강`;
+  if (item.mode === "discovery") return `후보 찾기 ${item.runNo ?? "?"}차 · ${item.destinationCount}명 신규 후보`;
   const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
   if (item.status === "pending") return `${action} ${item.processedCount}/${item.candidateCount} 진행 중`;
   if (item.status === "failed") return `${action} ${item.processedCount}/${item.candidateCount} 실패`;
@@ -1280,7 +1328,7 @@ function historyTitle(item: AutomationHistoryItem) {
 }
 
 function historyResultLine(item: AutomationHistoryItem) {
-  if (item.mode === "discovery") return item.discoverySummary ?? `신규/근거 보강 ${item.destinationCount}명`;
+  if (item.mode === "discovery") return item.discoverySummary ?? `신규 후보 ${item.destinationCount}명`;
   if (item.status === "pending") {
     return item.processedCount > 0 ? `현재 ${item.processedCount}명 결과 저장 완료` : "첫 결과를 기다리는 중입니다.";
   }
@@ -1342,7 +1390,7 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
   if (item.mode === "discovery") {
     return (
       <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2", color: "#6b7684", lineHeight: 1.45 }}>
-        {item.discoverySummary ?? `신규/근거 보강 ${item.destinationCount}명`}
+        {item.discoverySummary ?? `신규 후보 ${item.destinationCount}명`}
       </span>
     );
   }
@@ -1376,6 +1424,10 @@ function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
       ))}
     </span>
   );
+}
+
+function discoveryResultSummary(payload: DiscoveryResponse, label: string) {
+  return `${label} ${payload.runNo}차 · 원천 ${payload.sourceResultCount} · Instagram handle ${payload.instagramHandleCount} · DB 기존 제외 ${payload.existingExcludedCount} · 신규 ${payload.newCandidateCount} · 추천 ${payload.recommendedCount} · 검증 필요 ${payload.needsReviewCount} · 제외 ${payload.excludedCount}`;
 }
 
 function formatBulkDmText(drafts: Array<Pick<DmDraft, "handle" | "japaneseText">>) {
