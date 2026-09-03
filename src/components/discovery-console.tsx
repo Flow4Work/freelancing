@@ -454,8 +454,8 @@ export function DiscoveryConsole() {
     });
   }
 
-  async function excludeVerificationCandidate(handle: string) {
-    if (statusFilter !== "verification_needed" || deletingCandidateHandle) return;
+  async function excludeCandidate(handle: string) {
+    if ((statusFilter !== "verification_needed" && statusFilter !== "duplicate_passed") || deletingCandidateHandle) return;
     if (!window.confirm(`@${handle} 후보를 수동 제외할까요? 이후 후보 찾기에서도 다시 신규 후보로 나오지 않습니다.`)) return;
 
     setDeletingCandidateHandle(handle);
@@ -816,6 +816,11 @@ export function DiscoveryConsole() {
             <label htmlFor="target">이번 추가 목표</label>
             <input id="target" type="number" min={10} max={300} value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} />
           </div>
+          <div className="candidate-summary-inline">
+            {listLoading
+              ? "누적 후보 불러오는 중…"
+              : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · 발송 확인 ${sendReadyContacts.length} · 제외 ${excludedTotal}`}
+          </div>
           <div className="control-actions">
             <div className="history-control">
               <button className="history-button" onClick={toggleHistory} aria-expanded={historyOpen}>기록</button>
@@ -880,11 +885,7 @@ export function DiscoveryConsole() {
 
       <section className="card results">
         <div className="results-head">
-          <div className="results-summary">
-            <strong>누적 후보</strong>
-            <span>{listLoading ? "불러오는 중…" : `전체 ${visibleCandidates.length} · 검증 필요 ${verificationNeededTotal} · 추천 후보 ${recommendedTotal} · 제외 ${excludedTotal} · 중복 통과 ${duplicatePassedTotal} · 최종 검증 완료 ${finalVerificationTotal} · 발송 확인 ${sendReadyContacts.length}`}</span>
-          </div>
-          <div className="results-actions">
+          <div className="results-tabs">
             <div className="mini-segment" aria-label="상태 필터">
               <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>전체</button>
               <button className={statusFilter === "verification_needed" ? "active" : ""} onClick={() => setStatusFilter("verification_needed")}>검증 필요</button>
@@ -894,25 +895,29 @@ export function DiscoveryConsole() {
               <button className={statusFilter === "final_verification" ? "active" : ""} onClick={() => setStatusFilter("final_verification")}>최종 검증 완료</button>
               <button className={statusFilter === "send_confirmation" ? "active" : ""} onClick={() => setStatusFilter("send_confirmation")}>발송 확인</button>
             </div>
-            {statusFilter === "verification_needed" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={selectVerificationBatch}
-                  disabled={automationLoading || !filteredCandidates.length || selectedVerificationHandles.size >= 30}
-                  style={{ padding: "7px 10px", fontSize: 12 }}
-                >30명 선택</button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={clearVerificationSelection}
-                  disabled={automationLoading || selectedVerificationHandles.size === 0}
-                  style={{ padding: "7px 10px", fontSize: 12 }}
-                >선택 해제</button>
-                <span style={{ color: "#6b7684", fontSize: 12 }}>{selectedVerificationHandles.size}/30</span>
-              </div>
-            )}
+          </div>
+          <div className="results-workspace">
+            <div className="verification-selection-slot">
+              {statusFilter === "verification_needed" && (
+                <>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={selectVerificationBatch}
+                    disabled={automationLoading || !filteredCandidates.length || selectedVerificationHandles.size >= 30}
+                    style={{ padding: "7px 10px", fontSize: 12 }}
+                  >30명 선택</button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={clearVerificationSelection}
+                    disabled={automationLoading || selectedVerificationHandles.size === 0}
+                    style={{ padding: "7px 10px", fontSize: 12 }}
+                  >선택 해제</button>
+                  <span style={{ color: "#6b7684", fontSize: 12 }}>{selectedVerificationHandles.size}/30</span>
+                </>
+              )}
+            </div>
             <div style={{ width: ACTION_SLOT_WIDTH, flex: `0 0 ${ACTION_SLOT_WIDTH}px` }}>
               {action && (
                 <button
@@ -945,9 +950,10 @@ export function DiscoveryConsole() {
             candidates={filteredCandidates}
             getState={candidateState}
             selectable={statusFilter === "verification_needed"}
+            deletable={statusFilter === "verification_needed" || statusFilter === "duplicate_passed"}
             selectedHandles={selectedVerificationHandles}
             onToggleSelection={toggleVerificationSelection}
-            onDelete={excludeVerificationCandidate}
+            onDelete={excludeCandidate}
             deletingHandle={deletingCandidateHandle}
           />
         ) : <div className="empty">{listLoading ? "누적 후보를 불러오는 중입니다." : "현재 조건의 누적 후보가 없습니다."}</div>}
@@ -1109,6 +1115,7 @@ function CandidateTable({
   candidates,
   getState,
   selectable,
+  deletable,
   selectedHandles,
   onToggleSelection,
   onDelete,
@@ -1117,6 +1124,7 @@ function CandidateTable({
   candidates: DiscoveryCandidate[];
   getState: (candidate: DiscoveryCandidate) => CandidateViewState;
   selectable: boolean;
+  deletable: boolean;
   selectedHandles: Set<string>;
   onToggleSelection: (handle: string) => void;
   onDelete: (handle: string) => void;
@@ -1124,12 +1132,17 @@ function CandidateTable({
 }) {
   return (
     <div className="table-wrap">
-      <table>
+      <table className="candidate-table">
         <thead>
           <tr>
-            {selectable && <th style={{ width: 52, textAlign: "center" }}>선택</th>}
-            <th>Instagram</th><th style={{ width: 154 }}>상태</th><th>팔로워 / Reels</th><th>확인 근거</th><th>중복</th><th>검증</th>
-            {selectable && <th style={{ width: 70, textAlign: "center" }}>제외</th>}
+            <th className="candidate-selection-col">{selectable ? "선택" : ""}</th>
+            <th className="candidate-instagram-col">Instagram</th>
+            <th>상태</th>
+            <th>팔로워 / Reels</th>
+            <th>확인 근거</th>
+            <th>App 검증</th>
+            <th>검증</th>
+            <th className="candidate-exclusion-col">{deletable ? "제외" : ""}</th>
           </tr>
         </thead>
         <tbody>
@@ -1138,8 +1151,8 @@ function CandidateTable({
             const summary = evidenceSummary(candidate);
             return (
               <tr key={candidate.handle} className={state === "verification_needed" || state === "unmapped" ? "review-row" : ""}>
-                {selectable && (
-                  <td style={{ textAlign: "center" }}>
+                <td className="candidate-selection-col">
+                  {selectable && (
                     <input
                       type="checkbox"
                       aria-label={`@${candidate.handle} 선택`}
@@ -1147,16 +1160,16 @@ function CandidateTable({
                       onChange={() => onToggleSelection(candidate.handle)}
                       disabled={Boolean(deletingHandle)}
                     />
-                  </td>
-                )}
-                <td><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
+                  )}
+                </td>
+                <td className="candidate-instagram-col"><div className="handle">@{candidate.handle}</div><a className="link" href={candidate.profileUrl} target="_blank" rel="noreferrer">프로필 열기 ↗</a></td>
                 <td><CandidateStateBadges state={state} candidate={candidate} /></td>
                 <td className="status">{metricLabel(candidate)}</td>
                 <td><div className="evidence-one-line" title={summary}>{summary}</div></td>
                 <td className="status">{duplicateLabel(candidate)}</td>
                 <td className="status">{verificationLabel(candidate)}</td>
-                {selectable && (
-                  <td style={{ textAlign: "center" }}>
+                <td className="candidate-exclusion-col">
+                  {deletable && (
                     <button
                       className="secondary"
                       type="button"
@@ -1164,8 +1177,8 @@ function CandidateTable({
                       disabled={Boolean(deletingHandle)}
                       style={{ padding: "5px 8px", fontSize: 11, whiteSpace: "nowrap" }}
                     >{deletingHandle === candidate.handle ? "처리 중" : "삭제"}</button>
-                  </td>
-                )}
+                  )}
+                </td>
               </tr>
             );
           })}
@@ -1522,10 +1535,13 @@ function metricLabel(candidate: DiscoveryCandidate) {
 }
 
 function duplicateLabel(candidate: DiscoveryCandidate) {
-  if (candidate.duplicateCheckStatus === "available") return "진행가능(미등록)";
-  if (candidate.duplicateCheckStatus === "unknown") return "확인 불가";
-  if (candidate.duplicateCheckStatus === "duplicate") return "중복";
+  if (candidate.duplicateCheckStatus === "available") {
+    const state = getCandidateViewState(candidate);
+    return state === "duplicate_passed" || state === "final_verification" || state === "dm_ready" ? "진행 가능" : "미등록";
+  }
+  if (candidate.duplicateCheckStatus === "duplicate") return "이미 등록됨";
   if (candidate.duplicateCheckStatus === "protected") return "보호 목록";
+  if (candidate.duplicateCheckStatus === "unknown") return "확인 불가";
   return "미확인";
 }
 
