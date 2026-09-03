@@ -50,7 +50,7 @@ export type DiscoveryCandidate = {
   duplicateCheckedAt: string | null;
   bio: string | null;
   followers: number | null;
-  followersSource: FollowerSource | null;
+  followersSource?: FollowerSource | null;
   reelAverage: number | null;
   reelMedian: number | null;
   reelSampleSize: number | null;
