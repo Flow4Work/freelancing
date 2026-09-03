@@ -147,6 +147,16 @@ for ($i = 0; $i -lt $Arguments.Count - 1; $i++) {
 $IsRun = $Arguments.Count -gt 0 -and [string]$Arguments[0] -eq 'run'
 $IsPrimaryRun = $IsRun -and $Model -eq $PrimaryModel
 
+# Fallback models proved they can call MCP tools only when OpenCode auto-approves
+# permissions. Keep the primary Spark path unchanged; add the public --auto flag
+# only to non-primary FixUp Scout run attempts.
+if ($IsRun -and -not $IsPrimaryRun) {
+    $HasAutoApproval = ($Arguments -contains '--auto') -or ($Arguments -contains '--dangerously-skip-permissions') -or ($Arguments -contains '--yolo')
+    if (-not $HasAutoApproval) {
+        $Arguments += '--auto'
+    }
+}
+
 if (-not $IsPrimaryRun) {
     & $RealOpenCode @Arguments
     $Code = $LASTEXITCODE
