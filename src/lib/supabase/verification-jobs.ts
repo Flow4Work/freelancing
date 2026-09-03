@@ -59,8 +59,6 @@ const DESTINATIONS: VerificationJobDestination[] = [
   "미반영",
 ];
 
-const STALE_PENDING_MS = 2 * 60 * 60 * 1000;
-
 export async function createVerificationJob(
   category: SearchCategory,
   handles: string[],
@@ -85,8 +83,6 @@ export async function createVerificationJob(
 export async function listRecentVerificationJobs(category: SearchCategory, limit = 8): Promise<RecentVerificationJob[]> {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
-
-  await expireStalePendingJobs();
 
   const { data, error } = await supabase
     .from("creator_verification_jobs")
@@ -257,22 +253,6 @@ export async function failVerificationJob(jobId: string, message: string): Promi
 
 export async function completeVerificationJob(jobId: string, category: SearchCategory, handles: string[]) {
   return recordVerificationJobProgress(jobId, category, handles);
-}
-
-async function expireStalePendingJobs() {
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return;
-  const cutoff = new Date(Date.now() - STALE_PENDING_MS).toISOString();
-  const { error } = await supabase
-    .from("creator_verification_jobs")
-    .update({
-      status: "failed",
-      failed_at: new Date().toISOString(),
-      failure_message: "OpenCode 작업이 종료 신호 없이 2시간 이상 pending 상태여서 자동 실패 처리되었습니다.",
-    })
-    .eq("status", "pending")
-    .lt("created_at", cutoff);
-  if (error) console.warn("verification_job_expire_failed", error.message);
 }
 
 async function buildResultSummary(category: SearchCategory, handles: string[]): Promise<VerificationJobResultSummary> {
