@@ -88,7 +88,7 @@ function Set-FixUpJobFailed([string]$Message) {
 function Test-OpenCodeQuotaFailure {
   try {
     if (-not (Test-Path -LiteralPath $OpenCodeLogFile)) { return $false }
-    $Text = Get-Content -LiteralPath $OpenCodeLogFile -Raw -ErrorAction Stop
+    $Text = Get-Content -LiteralPath $OpenCodeLogFile -Tail 120 -ErrorAction Stop | Out-String
     return $Text -match '(?i)(\b429\b|INSUFFICIENT[_ ]QUOTA|rate[ -]?limit|quota[ -]?(?:exceeded|insufficient)|insufficient[ -]?(?:credit|quota)|credits?[ -]?(?:exhausted|insufficient))'
   } catch {
     return $false
@@ -228,28 +228,80 @@ $TargetPid = ${input.processId}
 $JobId = ${psQuote(input.jobId)}
 $OpenCodeLogFile = ${psQuote(input.openCodeLogPath)}
 $JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
+$IdleLimitSeconds = 75
+$PollSeconds = 5
+$LastLength = -1L
+$LastWriteTicks = -1L
+$LastActivityAt = [DateTime]::UtcNow
 
-Wait-Process -Id $TargetPid -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
+function Get-FixUpJobStatus {
+  try { return Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10 } catch { return $null }
+}
 
-$Job = $null
-try { $Job = Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10 } catch {}
-if ($null -eq $Job -or $Job.status -ne "pending") { exit 0 }
-
-$FailureMessage = "OpenCode/model 응답 정지 또는 실행 창 종료"
-try {
-  if (Test-Path -LiteralPath $OpenCodeLogFile) {
-    $Text = Get-Content -LiteralPath $OpenCodeLogFile -Raw -ErrorAction Stop
-    if ($Text -match '(?i)(\b429\b|INSUFFICIENT[_ ]QUOTA|rate[ -]?limit|quota[ -]?(?:exceeded|insufficient)|insufficient[ -]?(?:credit|quota)|credits?[ -]?(?:exhausted|insufficient))') {
-      $FailureMessage = "OpenCode provider 429/크레딧 부족"
+function Get-FailureMessage([string]$DefaultMessage) {
+  try {
+    if (Test-Path -LiteralPath $OpenCodeLogFile) {
+      $Text = Get-Content -LiteralPath $OpenCodeLogFile -Tail 120 -ErrorAction Stop | Out-String
+      if ($Text -match '(?i)(\b429\b|INSUFFICIENT[_ ]QUOTA|rate[ -]?limit|quota[ -]?(?:exceeded|insufficient)|insufficient[ -]?(?:credit|quota)|credits?[ -]?(?:exhausted|insufficient))') {
+        return "OpenCode provider 429/크레딧 부족"
+      }
     }
-  }
-} catch {}
+  } catch {}
+  return $DefaultMessage
+}
 
-try {
-  $Body = @{ jobId = $JobId; error = $FailureMessage } | ConvertTo-Json -Compress
-  Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10 | Out-Null
-} catch {}
+function Set-FixUpJobFailed([string]$Message) {
+  try {
+    $Body = @{ jobId = $JobId; error = $Message } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10 | Out-Null
+  } catch {}
+}
+
+function Stop-FixUpProcessTree {
+  try {
+    & taskkill.exe /PID $TargetPid /T /F 2>$null | Out-Null
+  } catch {
+    try { Stop-Process -Id $TargetPid -Force -ErrorAction SilentlyContinue } catch {}
+  }
+}
+
+Start-Sleep -Seconds $PollSeconds
+
+while ($null -ne (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) {
+  $Job = Get-FixUpJobStatus
+  if ($null -ne $Job -and $Job.status -ne "pending") { exit 0 }
+
+  try {
+    if (Test-Path -LiteralPath $OpenCodeLogFile) {
+      $Log = Get-Item -LiteralPath $OpenCodeLogFile -ErrorAction Stop
+      $Length = [int64]$Log.Length
+      $WriteTicks = [int64]$Log.LastWriteTimeUtc.Ticks
+      if ($LastLength -lt 0 -or $Length -ne $LastLength -or $WriteTicks -ne $LastWriteTicks) {
+        $LastLength = $Length
+        $LastWriteTicks = $WriteTicks
+        $LastActivityAt = [DateTime]::UtcNow
+      }
+    }
+  } catch {}
+
+  if (([DateTime]::UtcNow - $LastActivityAt).TotalSeconds -ge $IdleLimitSeconds) {
+    $Job = Get-FixUpJobStatus
+    if ($null -ne $Job -and $Job.status -eq "pending") {
+      $FailureMessage = Get-FailureMessage "OpenCode/model 응답 정지"
+      Set-FixUpJobFailed $FailureMessage
+      Stop-FixUpProcessTree
+    }
+    exit 0
+  }
+
+  Start-Sleep -Seconds $PollSeconds
+}
+
+Start-Sleep -Seconds 2
+$Job = Get-FixUpJobStatus
+if ($null -eq $Job -or $Job.status -ne "pending") { exit 0 }
+$FailureMessage = Get-FailureMessage "OpenCode/model 응답 정지 또는 실행 창 종료"
+Set-FixUpJobFailed $FailureMessage
 `;
 
   await writeFile(input.watcherPath, `\uFEFF${watcher}`, { encoding: "utf8" });
