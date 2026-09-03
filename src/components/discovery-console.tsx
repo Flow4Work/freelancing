@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCandidateViewState, getSearchStageViewState, type CandidateViewState } from "@/lib/discovery/presentation";
 import type { CandidateListResponse, DiscoveryCandidate, DiscoveryResponse, SearchCategory } from "@/lib/discovery/types";
-import { buildDmInputPrompt } from "@/lib/dm/opencode-prompt";
+import { buildDmBatchInputPrompt } from "@/lib/dm/opencode-prompt";
 import dmStyles from "./dm-workflow.module.css";
 
 type Health = {
@@ -67,6 +67,8 @@ type DmContactsResponse = {
   contacts?: DmContact[];
   contact?: DmContact;
   koreanText?: string;
+  processId?: number;
+  candidateCount?: number;
   error?: string;
 };
 
@@ -118,7 +120,6 @@ const DUPLICATE_PENDING_BADGE_STYLE = { color: "#6b7684", background: "#f2f4f6" 
 const ACTION_SLOT_WIDTH = 118;
 const AUTOMATION_WATCH_MS = 3 * 60 * 60 * 1000;
 const BULK_APPROVAL_HANDLE = "__all__";
-const PREVIEW_CONTACT_ID = "<전송 시 승인 ID 생성>";
 
 export function DiscoveryConsole() {
   const [category, setCategory] = useState<SearchCategory>("beauty");
@@ -527,66 +528,68 @@ export function DiscoveryConsole() {
     if (dmReviewStep !== "confirm" || !dmDrafts.length || dmApprovingHandle) return;
     const pending = dmDrafts.filter((draft) => !draft.approved);
     if (!pending.length) return;
-    const empty = pending.find((draft) => !draft.japaneseText.trim());
-    if (empty) {
-      setToast({ kind: "error", message: `@${empty.handle} 일본어 DM 원문이 비어 있습니다.` });
+
+    const emptyJapanese = pending.find((draft) => !draft.japaneseText.trim());
+    if (emptyJapanese) {
+      setToast({ kind: "error", message: `@${emptyJapanese.handle} 일본어 DM 원문이 비어 있습니다.` });
+      return;
+    }
+    const emptyKorean = pending.find((draft) => !draft.koreanText.trim());
+    if (emptyKorean) {
+      setToast({ kind: "error", message: `@${emptyKorean.handle} 한국어 DM 해석이 비어 있습니다.` });
+      return;
+    }
+    const dirty = pending.find((draft) => draft.translationDirty);
+    if (dirty) {
+      setToast({ kind: "error", message: `@${dirty.handle} 번역 동기화가 완료되지 않았습니다. 수정하기에서 다시 다음을 눌러주세요.` });
       return;
     }
 
     setDmApprovingHandle(BULK_APPROVAL_HANDLE);
     setToast(null);
-    let working = dmDrafts.map((draft) => ({ ...draft }));
-    let approvedCount = 0;
 
     try {
-      for (let index = 0; index < working.length; index += 1) {
-        const draft = working[index];
-        if (draft.approved || !draft.translationDirty) continue;
-        setDmTranslatingHandle(draft.handle);
-        const koreanText = await requestDmTranslation(draft.japaneseText);
-        working[index] = { ...draft, koreanText, translationDirty: false };
-        setDmDrafts(working.map((item) => ({ ...item })));
-      }
-      setDmTranslatingHandle(null);
-
-      for (let index = 0; index < working.length; index += 1) {
-        const draft = working[index];
-        if (draft.approved) continue;
-
-        const response = await fetch("/api/dm/approve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            category,
+      const response = await fetch("/api/dm/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category,
+          items: pending.map((draft) => ({
             handle: draft.handle,
             japaneseText: draft.japaneseText,
             koreanText: draft.koreanText,
-          }),
-        });
-        const payload = await response.json() as DmContactsResponse;
-        if (!response.ok || !payload.ok || !payload.contact) throw new Error(payload.error ?? `@${draft.handle} DM 전송 준비 실패`);
+          })),
+        }),
+      });
+      const payload = await response.json() as DmContactsResponse;
+      const contacts = payload.contacts ?? [];
+      if (!response.ok || !payload.ok || contacts.length !== pending.length) {
+        throw new Error(payload.error ?? `DM batch 전송 준비 실패: ${contacts.length}/${pending.length}명 승인`);
+      }
 
-        working[index] = {
+      const contactByHandle = new Map(contacts.map((contact) => [contact.handle, contact]));
+      const working = dmDrafts.map((draft) => {
+        const contact = contactByHandle.get(draft.handle);
+        if (!contact) return draft;
+        return {
           ...draft,
-          japaneseText: payload.contact.japaneseText,
-          koreanText: payload.contact.koreanText,
+          japaneseText: contact.japaneseText,
+          koreanText: contact.koreanText,
           translationDirty: false,
           approved: true,
         };
-        approvedCount += 1;
-        setDmDrafts(working.map((item) => ({ ...item })));
-      }
+      });
+      setDmDrafts(working);
 
       await reloadDmContacts(category);
-      setToast({ kind: "success", message: "OpenCode가 승인된 DM 입력 작업을 시작합니다. 자동 전송은 하지 않습니다." });
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "DM 전체 전송 준비 실패";
       setToast({
-        kind: "error",
-        message: approvedCount > 0 ? `전송 준비 ${approvedCount}/${pending.length}명 처리 후 중단 · ${message}` : message,
+        kind: "success",
+        message: `OpenCode batch 시작 · ${payload.candidateCount ?? contacts.length}명 · 프로세스 1개 · 자동 전송 없음`,
       });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "DM batch 전송 준비 실패";
+      setToast({ kind: "error", message });
     } finally {
-      setDmTranslatingHandle(null);
       setDmApprovingHandle(null);
     }
   }
@@ -809,23 +812,24 @@ export function DiscoveryConsole() {
                 <div className={dmStyles.confirmBody}>
                   <div className={dmStyles.launcherSummary}>
                     <strong>OpenCode 실행 방식</strong>
-                    <code>opencode run "첨부된 FixUp Scout DM 입력 지시만 실행해. 승인 원문을 입력창에 그대로 넣고 절대 전송하지 마." --file [승인 후 생성되는 프롬프트 파일]</code>
-                    <span>아래 프롬프트의 contactId만 전송 시 실제 승인 ID로 바뀌며, @handle과 일본어 원문은 그대로 전달됩니다.</span>
+                    <code>PowerShell/OpenCode 창 1개 · opencode run 1회 · 승인된 {dmDrafts.length}명을 같은 Chrome 세션에서 순서대로 입력 · 실제 Send 0회</code>
+                    <span>후보 1명이 실패해도 해당 결과만 failed로 기록하고 가능한 나머지 후보는 계속 처리합니다.</span>
                   </div>
 
+                  <details className={dmStyles.promptDetails}>
+                    <summary>OpenCode 전체 프롬프트 확인</summary>
+                    <pre className={dmStyles.promptPreview}>{buildDmBatchInputPrompt(dmDrafts.map((draft) => ({
+                      contactId: `<전송 시 @${draft.handle} 승인 ID>`,
+                      handle: draft.handle,
+                      approvedJapaneseText: draft.japaneseText,
+                    })))}</pre>
+                  </details>
+
+                  <div className={dmStyles.confirmLabel}>전송 대상 {dmDrafts.length}명</div>
                   {dmDrafts.map((draft) => (
                     <section className={dmStyles.confirmItem} key={`confirm-${draft.handle}`}>
                       <strong className={dmStyles.confirmHandle}>@{draft.handle}</strong>
-                      <div className={dmStyles.confirmLabel}>Instagram에 입력될 최종 일본어 DM</div>
                       <pre className={dmStyles.confirmDm}>{draft.japaneseText}</pre>
-                      <details className={dmStyles.promptDetails}>
-                        <summary>OpenCode 전달 프롬프트 확인</summary>
-                        <pre className={dmStyles.promptPreview}>{buildDmInputPrompt({
-                          contactId: PREVIEW_CONTACT_ID,
-                          handle: draft.handle,
-                          approvedJapaneseText: draft.japaneseText,
-                        })}</pre>
-                      </details>
                     </section>
                   ))}
                 </div>
@@ -846,7 +850,7 @@ export function DiscoveryConsole() {
                     {dmDrafts.every((draft) => draft.approved)
                       ? "전송 준비 완료"
                       : dmApprovingHandle === BULK_APPROVAL_HANDLE
-                        ? "OpenCode 실행 중…"
+                        ? "OpenCode batch 실행 중…"
                         : "전송"}
                   </button>
                 </div>
