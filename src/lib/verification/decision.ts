@@ -42,6 +42,9 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
   if (input.isPersonalCreator === false) {
     return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "개인 크리에이터가 아닌 계정" };
   }
+  if (input.followers !== null && input.followers >= 100000) {
+    return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "팔로워 100,000 이상" };
+  }
   if (input.japaneseTarget === false) {
     return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "일본 타깃 아님" };
   }
