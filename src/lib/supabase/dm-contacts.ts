@@ -19,54 +19,100 @@ export type DmContact = {
   sentAt: string | null;
 };
 
-export async function createApprovedDmContact(input: {
+type ApprovedDmContactInput = {
   category: SearchCategory;
   handle: string;
   japaneseText: string;
   koreanText: string;
-}) {
-  const supabase = requireSupabase();
-  const handle = normalizeHandle(input.handle);
-  if (!handle) throw new Error("Instagram ID가 올바르지 않습니다.");
+};
 
-  const { data: candidate, error: candidateError } = await supabase
+export async function createApprovedDmContacts(inputs: ApprovedDmContactInput[]) {
+  if (!inputs.length) throw new Error("승인할 DM이 없습니다.");
+
+  const supabase = requireSupabase();
+  const categories = new Set(inputs.map((input) => input.category));
+  if (categories.size !== 1) throw new Error("한 번의 DM 승인 batch에는 하나의 장르만 사용할 수 있습니다.");
+  const category = inputs[0].category;
+
+  const normalizedInputs = inputs.map((input) => {
+    const handle = normalizeHandle(input.handle);
+    if (!handle) throw new Error("Instagram ID가 올바르지 않습니다.");
+    const japaneseText = input.japaneseText;
+    const koreanText = input.koreanText.trim();
+    if (!japaneseText.trim()) throw new Error(`@${handle} 승인 일본어 DM이 비어 있습니다.`);
+    if (!koreanText) throw new Error(`@${handle} 승인 한국어 DM 해석이 비어 있습니다.`);
+    return { ...input, handle, japaneseText, koreanText };
+  });
+
+  const duplicateHandles = normalizedInputs
+    .map((input) => input.handle)
+    .filter((handle, index, all) => all.indexOf(handle) !== index);
+  if (duplicateHandles.length) {
+    throw new Error(`DM 승인 batch에 중복 handle이 있습니다: ${[...new Set(duplicateHandles)].map((handle) => `@${handle}`).join(", ")}`);
+  }
+
+  const handles = normalizedInputs.map((input) => input.handle);
+  const { data: candidates, error: candidateError } = await supabase
     .from("creator_candidates")
     .select("normalized_handle, dm_generated_at")
-    .eq("normalized_handle", handle)
-    .eq("category", input.category)
+    .eq("category", category)
     .eq("duplicate_check_status", "available")
     .eq("verification_status", "verified")
     .eq("discovery_status", "qualified")
-    .single();
+    .in("normalized_handle", handles);
 
-  if (candidateError || !candidate) {
-    throw new Error(`@${handle}은 현재 DM 준비 가능한 최종 검증 완료 후보가 아닙니다.`);
+  if (candidateError) {
+    throw new Error(`DM 승인 후보 확인 실패: ${candidateError.message}`);
   }
 
-  const generatedAt = candidate.dm_generated_at ? String(candidate.dm_generated_at) : null;
-  if (!generatedAt) throw new Error(`@${handle} DM 준비 생성 기록이 없습니다. 다시 생성하세요.`);
+  const candidateByHandle = new Map(
+    (candidates ?? []).map((candidate) => [String(candidate.normalized_handle), candidate]),
+  );
+  const missing = handles.filter((handle) => !candidateByHandle.has(handle));
+  if (missing.length) {
+    throw new Error(`현재 DM 준비 가능한 최종 검증 완료 후보가 아닙니다: ${missing.map((handle) => `@${handle}`).join(", ")}`);
+  }
 
-  const japaneseText = input.japaneseText;
-  const koreanText = input.koreanText.trim();
-  if (!japaneseText.trim() || !koreanText) throw new Error("승인할 일본어/한국어 DM이 비어 있습니다.");
+  const missingGeneratedAt = handles.filter((handle) => {
+    const candidate = candidateByHandle.get(handle);
+    return !candidate?.dm_generated_at;
+  });
+  if (missingGeneratedAt.length) {
+    throw new Error(`DM 준비 생성 기록이 없습니다. 다시 생성하세요: ${missingGeneratedAt.map((handle) => `@${handle}`).join(", ")}`);
+  }
+
+  const approvedAt = new Date().toISOString();
+  const rows = normalizedInputs.map((input) => ({
+    normalized_handle: input.handle,
+    category,
+    japanese_text: input.japaneseText,
+    korean_text: input.koreanText,
+    generated_at: String(candidateByHandle.get(input.handle)?.dm_generated_at),
+    approved_at: approvedAt,
+    approval_status: "approved",
+    opencode_status: "pending",
+  }));
 
   const { data, error } = await supabase
     .from("creator_dm_contact_history")
-    .insert({
-      normalized_handle: handle,
-      category: input.category,
-      japanese_text: japaneseText,
-      korean_text: koreanText,
-      generated_at: generatedAt,
-      approved_at: new Date().toISOString(),
-      approval_status: "approved",
-      opencode_status: "pending",
-    })
-    .select(CONTACT_COLUMNS)
-    .single();
+    .insert(rows)
+    .select(CONTACT_COLUMNS);
 
-  if (error || !data) throw new Error(`@${handle} DM 승인 이력 저장 실패: ${error?.message ?? "저장 결과 없음"}`);
-  return mapContact(data);
+  if (error || !data || data.length !== rows.length) {
+    throw new Error(`DM 승인 이력 batch 저장 실패: ${error?.message ?? `저장 ${data?.length ?? 0}/${rows.length}건`}`);
+  }
+
+  const savedByHandle = new Map(data.map((row) => [String(row.normalized_handle), mapContact(row)]));
+  return normalizedInputs.map((input) => {
+    const contact = savedByHandle.get(input.handle);
+    if (!contact) throw new Error(`@${input.handle} DM 승인 이력 저장 결과를 찾지 못했습니다.`);
+    return contact;
+  });
+}
+
+export async function createApprovedDmContact(input: ApprovedDmContactInput) {
+  const contacts = await createApprovedDmContacts([input]);
+  return contacts[0];
 }
 
 export async function listUnsentDmContacts(category: SearchCategory) {
