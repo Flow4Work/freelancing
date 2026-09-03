@@ -35,15 +35,22 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
   const invokedPath = path.join(root, `${input.jobId}.invoked`);
   const failedPath = path.join(root, `${input.jobId}.failed`);
+  const duplicateJob = input.title === "중복 확인";
 
   await Promise.all([
     rm(invokedPath, { force: true }),
     rm(failedPath, { force: true }),
   ]);
 
-  const reliabilityInstruction = `\n\n[최우선 저장 안정성]\n- 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.`;
+  const reliabilityInstruction = duplicateJob
+    ? `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 중복 확인이다. 본문에 적힌 1차/2차 batch 저장 방식을 그대로 지키며 후보 1명마다 POST하지 않는다.\n- FixUp 전원 판정 → duplicate/protected/unknown 1차 batch → 필요한 available의 Instagram followers만 확인 → available 2차 batch 순서를 바꾸지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 본문의 FixUp 중복 페이지로 이동한다.\n- BIO/Reels/게시물 검증은 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 batch를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.`
+    : `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 Instagram 최종 검증이다. 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 첫 후보 Instagram 프로필로 이동한다.\n- /reels/ 로딩 실패 시 짧게 대기 → 최신 snapshot → 필요하면 같은 /reels/ 1회 재이동 또는 reload까지만 허용한다. 그래도 조회수를 읽지 못하면 reels:[]와 확인 불가 사유를 note에 넣어 즉시 POST하고 다음 후보로 간다.\n- Reels 실패 때문에 network/GraphQL/request body 분석, HTML dump 반복, 다른 후보 Reels 페이지 재방문을 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.`;
 
   await writeFile(promptPath, `${input.prompt}${reliabilityInstruction}`, { encoding: "utf8" });
+
+  const openCodeInstruction = duplicateJob
+    ? "첨부된 FixUp Scout 작업 지시만 실행해. 사전 API/port/code 탐색 없이 바로 FixUp 중복 페이지부터 시작하고, 본문의 최대 2회 batch POST 방식을 그대로 지켜. 마지막 completed:true까지 확인해."
+    : "첨부된 FixUp Scout 작업 지시만 실행해. 사전 API/port/code 탐색 없이 바로 첫 후보 Instagram 프로필부터 시작해. 후보 1명마다 즉시 localhost POST하고 마지막 completed:true까지 확인해.";
 
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -83,11 +90,11 @@ try {
   }
 
   Write-Host "[FixUp Scout] ${input.title} · OpenCode 자동 실행" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] 각 후보 결과는 완료 즉시 Scout에 저장됩니다." -ForegroundColor DarkGray
+  Write-Host "[FixUp Scout] 결과 저장 방식은 현재 작업 프롬프트를 따릅니다." -ForegroundColor DarkGray
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout 작업 지시만 실행해. 후보 1명마다 즉시 localhost POST하고 마지막 completed:true까지 확인해." --file $PromptFile
+  & $OpenCode run ${psQuote(openCodeInstruction)} --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
 
@@ -129,7 +136,7 @@ catch {
   try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
   Write-Host ""
   Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
-  Write-Host "이미 POST 성공한 후보 결과는 Scout에 보존됩니다." -ForegroundColor Yellow
+  Write-Host "이미 POST 성공한 결과는 Scout에 보존됩니다." -ForegroundColor Yellow
   Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
   Read-Host "창을 닫으려면 Enter"
   exit 1
