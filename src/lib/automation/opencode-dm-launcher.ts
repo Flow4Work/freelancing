@@ -4,23 +4,55 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
 import { assertOpenCodeAvailable } from "./opencode-launcher";
-import { buildDmBatchInputPrompt, type DmBatchInput } from "@/lib/dm/opencode-prompt";
+import {
+  buildDmBatchInputPrompt,
+  serializeDmBatchInputPayload,
+  validateDmBatchInputs,
+  type DmBatchInput,
+} from "@/lib/dm/opencode-prompt";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function launchOpenCodeDmBatch(inputs: DmBatchInput[]) {
-  if (!inputs.length) throw new Error("OpenCode에 전달할 DM 승인 데이터가 없습니다.");
+  const validatedInputs = validateDmBatchInputs(inputs);
+  if (validatedInputs.length !== inputs.length) {
+    throw new Error(`OpenCode DM batch 검증 수가 일치하지 않습니다: ${validatedInputs.length}/${inputs.length}`);
+  }
+  for (const input of validatedInputs) {
+    if (!UUID_PATTERN.test(input.contactId)) {
+      throw new Error(`@${input.handle} contactId가 UUID가 아닙니다.`);
+    }
+  }
+
+  const serializedPayload = serializeDmBatchInputPayload(validatedInputs);
+  const promptInputs = JSON.parse(serializedPayload) as DmBatchInput[];
+  if (!Array.isArray(promptInputs) || promptInputs.length !== validatedInputs.length) {
+    throw new Error(`OpenCode prompt JSON 수가 일치하지 않습니다: ${Array.isArray(promptInputs) ? promptInputs.length : 0}/${validatedInputs.length}`);
+  }
+  for (let index = 0; index < validatedInputs.length; index += 1) {
+    if (
+      promptInputs[index]?.contactId !== validatedInputs[index].contactId
+      || promptInputs[index]?.handle !== validatedInputs[index].handle
+      || promptInputs[index]?.approvedJapaneseText !== validatedInputs[index].approvedJapaneseText
+    ) {
+      throw new Error(`OpenCode prompt JSON ${index + 1}번째 데이터가 launcher 원본과 일치하지 않습니다.`);
+    }
+  }
+
   assertOpenCodeAvailable();
 
   const command = getOpenCodeCommand();
   const root = path.join(tmpdir(), "fixup-scout");
   await mkdir(root, { recursive: true });
 
-  const batchKey = `${inputs[0].contactId}-${inputs.length}`;
+  const expectedCount = validatedInputs.length;
+  const batchKey = `${validatedInputs[0].contactId}-${expectedCount}`;
   const promptPath = path.join(root, `dm-batch-${batchKey}.md`);
   const scriptPath = path.join(root, `dm-batch-${batchKey}.ps1`);
   const invokedPath = path.join(root, `dm-batch-${batchKey}.invoked`);
   const failedPath = path.join(root, `dm-batch-${batchKey}.failed`);
-  const prompt = buildDmBatchInputPrompt(inputs);
-  const contactsJson = JSON.stringify(inputs.map((input) => ({
+  const prompt = buildDmBatchInputPrompt(promptInputs);
+  const contactsJson = JSON.stringify(promptInputs.map((input) => ({
     contactId: input.contactId,
     handle: input.handle,
   })));
@@ -36,7 +68,8 @@ $Utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8
 $OutputEncoding = $Utf8
 try { chcp 65001 > $null } catch {}
-try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · DM batch ${inputs.length}명`)} } catch {}
+$ExpectedCount = ${expectedCount}
+try { $Host.UI.RawUI.WindowTitle = ${psQuote(`FixUp Scout · DM batch ${expectedCount}명`)} } catch {}
 Set-Location -LiteralPath ${psQuote(process.cwd())}
 $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
@@ -66,16 +99,31 @@ try {
   $null = Get-Command $OpenCode -ErrorAction Stop
   if (-not (Test-Path -LiteralPath $PromptFile)) { throw "FixUp Scout DM batch 프롬프트 파일을 찾을 수 없습니다." }
   if ((Get-Item -LiteralPath $PromptFile).Length -le 0) { throw "FixUp Scout DM batch 프롬프트가 비어 있습니다." }
+  if ($Contacts.Count -ne $ExpectedCount) { throw "FixUp Scout DM batch 수량 불일치: launcher $($Contacts.Count) / expected $ExpectedCount" }
   if ($Contacts.Count -le 0) { throw "FixUp Scout DM batch 승인 데이터가 비어 있습니다." }
 
-  Write-Host "[FixUp Scout] DM batch $($Contacts.Count)명 · 승인 DM 입력 준비" -ForegroundColor Cyan
-  Write-Host "[FixUp Scout] OpenCode는 1회만 실행하며 실제 전송은 하지 않습니다." -ForegroundColor Yellow
+  $UniqueHandles = @($Contacts | ForEach-Object { [string]$_.handle } | Sort-Object -Unique)
+  $UniqueContactIds = @($Contacts | ForEach-Object { [string]$_.contactId } | Sort-Object -Unique)
+  if ($UniqueHandles.Count -ne $ExpectedCount) { throw "FixUp Scout DM batch handle 수량/중복 검증 실패" }
+  if ($UniqueContactIds.Count -ne $ExpectedCount) { throw "FixUp Scout DM batch contactId 수량/중복 검증 실패" }
+  foreach ($Contact in $Contacts) {
+    $Handle = [string]$Contact.handle
+    if ($Handle -notmatch '^[A-Za-z0-9._]{1,30}$' -or $Handle.Contains('\\')) {
+      throw "잘못된 Instagram handle: $Handle"
+    }
+  }
+
+  Write-Host "[FixUp Scout] DM batch $ExpectedCount명 · 승인 저장 $ExpectedCount · launcher $($Contacts.Count) · prompt $ExpectedCount" -ForegroundColor Cyan
+  Write-Host "[FixUp Scout] OpenCode는 정확히 1회만 실행하며 실제 전송은 하지 않습니다." -ForegroundColor Yellow
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
-  & $OpenCode run "첨부된 FixUp Scout DM batch 지시만 실행해. 승인 원문을 각 입력창에 그대로 넣고 절대 전송하지 마." --file $PromptFile
+  $OpenCodeRunCount = 0
+  $OpenCodeRunCount += 1
+  & $OpenCode run "첨부된 FixUp Scout DM batch 지시만 실행해. Scout localhost 탭은 그대로 보존하고, 후보마다 별도 Instagram 탭을 만들어 승인 원문을 입력만 하고 절대 전송하지 마." --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
+  if ($OpenCodeRunCount -ne 1) { throw "OpenCode 실행 횟수 불일치: $OpenCodeRunCount" }
 
   $SuccessCount = 0
   $FailedCount = 0
@@ -97,9 +145,9 @@ try {
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Write-Host ""
   if ($FailedCount -gt 0) {
-    Write-Host "[FixUp Scout] DM batch 입력 종료 · 성공 $SuccessCount / 실패 $FailedCount · 실제 전송 0" -ForegroundColor Yellow
+    Write-Host "[FixUp Scout] DM batch 입력 종료 · 대상 $ExpectedCount / OpenCode 1회 / 성공 $SuccessCount / 실패 $FailedCount · 실제 전송 0" -ForegroundColor Yellow
   } else {
-    Write-Host "[FixUp Scout] DM batch 입력 준비 완료 · 성공 $SuccessCount / 실제 전송 0" -ForegroundColor Green
+    Write-Host "[FixUp Scout] DM batch 입력 준비 완료 · 대상 $ExpectedCount / OpenCode 1회 / 성공 $SuccessCount · 실제 전송 0" -ForegroundColor Green
   }
   Read-Host "창을 닫으려면 Enter"
   exit 0
@@ -148,7 +196,15 @@ catch {
 
   await waitForOpenCodeInvocation(invokedPath, failedPath);
   await rm(invokedPath, { force: true });
-  return { command, promptPath, processId, candidateCount: inputs.length };
+  return {
+    command,
+    promptPath,
+    processId,
+    candidateCount: expectedCount,
+    launcherCount: expectedCount,
+    promptCount: promptInputs.length,
+    openCodeRunCount: 1,
+  };
 }
 
 export async function launchOpenCodeDmInput(input: DmBatchInput) {
