@@ -46,6 +46,7 @@ type DmPrepareResponse = {
   providerCounts?: Record<string, number>;
   models?: string[];
   items?: DmPreparedItem[];
+  reused?: boolean;
   error?: string;
 };
 
@@ -555,7 +556,7 @@ export function DiscoveryConsole() {
       const response = await fetch("/api/dm/prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, handles }),
+        body: JSON.stringify({ category, handles, forceRegenerate }),
       });
       const payload = await response.json() as DmPrepareResponse;
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? "DM 준비 실패");
@@ -594,10 +595,10 @@ export function DiscoveryConsole() {
         counts.scaleway ? `Scaleway ${counts.scaleway}` : null,
         counts.fallback ? `고정 fallback ${counts.fallback}` : null,
       ].filter(Boolean).join(" · ");
-      setToast({
-        kind: "success",
-        message: `${singleHandle ? `@${singleHandle} DM 다시 생성` : `${forceRegenerate ? "DM 다시 생성" : "DM 준비"} ${payload.preparedCount ?? items.length}명 완료`}${details ? ` · ${details}` : ""}`,
-      });
+      const resultMessage = payload.reused
+        ? `기존 DM 초안 ${payload.preparedCount ?? items.length}명 복구 · LLM 재생성 없음`
+        : `${singleHandle ? `@${singleHandle} DM 다시 생성` : `${forceRegenerate ? "DM 다시 생성" : "DM 준비"} ${payload.preparedCount ?? items.length}명 완료`}${details ? ` · ${details}` : ""}`;
+      setToast({ kind: "success", message: resultMessage });
     } catch (caught) {
       setToast({ kind: "error", message: caught instanceof Error ? caught.message : "DM 준비 실패" });
     } finally {
