@@ -181,8 +181,13 @@ if (-not $IsPrimaryRun) {
 
 $Circuit = Get-OpenCircuit
 if ($null -ne $Circuit) {
-    [Console]::Error.WriteLine("Free usage exceeded: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
-    exit 173
+    if ([string]$Circuit.reason -eq 'quota') {
+        [Console]::Error.WriteLine("Free usage exceeded: cached primary quota circuit open until $($Circuit.expiresAt).")
+        exit 173
+    }
+
+    [Console]::Error.WriteLine("Provider unavailable: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
+    exit 175
 }
 
 $Id = [Guid]::NewGuid().ToString('N')
