@@ -8,7 +8,6 @@ const SCALEWAY_URL = "https://api.scaleway.ai/v1/chat/completions";
 const SAFE_FALLBACK_LINE = "プロフィールを拝見し、ご連絡しました。";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_RATE_LIMIT_RETRIES = 3;
-const MAX_RETRY_DELAY_MS = 65_000;
 
 const INTERNAL_EVIDENCE_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|followers?|following|平均|평균|\b8\s*\/\s*8\b|\b\d+건\b|순위|順位|verified|qualified|검증|検証|모집조건|条件\s*(?:충족|通過)?|중복|重複|후보|候補|판정|判定|공개.?개인|개인\s*계정|최근\s*게시일|null|log\s*in|sign\s*up|photo\s*by|video\s*by|show\s*more|highlight\s*story|read\s*more)/i;
 const INTERNAL_OUTPUT_PATTERN = /(?:reels?|リール|再生(?:回数|数)?|조회수|팔로워|フォロワ|followers?|平均|평균|8\s*\/\s*8|8件|順位|verified|qualified|検証|검증|条件|모집조건|重複|중복|候補|후보|判定|판정)/i;
@@ -39,6 +38,18 @@ type PersonalizationFailureKind =
   | "provider_http"
   | "provider_error"
   | "validation";
+
+type LlmProvider = "groq" | "scaleway";
+type LlmStage = "personalization" | "personalization_repair" | "translation";
+type LlmRequestContext = {
+  provider: LlmProvider;
+  stage: LlmStage;
+  handle: string | null;
+};
+type PersonalizationFailure = {
+  provider: LlmProvider;
+  kind: PersonalizationFailureKind;
+};
 
 class DmLineValidationError extends Error {
   readonly code: LineValidationCode;
@@ -78,9 +89,22 @@ export type PreparedDm = {
 
 export async function prepareCandidateDm(candidate: DiscoveryCandidate): Promise<PreparedDm> {
   const basis = selectPersonalizationBasis(candidate);
-  const generated = await generatePersonalizationLine(candidate.handle, basis);
+  let generated: { line: string; provider: DmProvider; model: string };
+  try {
+    generated = await generatePersonalizationLine(candidate.handle, basis);
+  } catch (error) {
+    console.error("dm_candidate_prepare_failed", `handle=@${candidate.handle} stage=personalization error=${safeError(error)}`);
+    throw new Error(`@${candidate.handle} · 개인화 · ${safeError(error)}`);
+  }
+
   const dmText = composeDm(candidate.category, generated.line, candidate.handle, hasExplicitKoreaPresence(candidate));
-  const koreanText = await translateDmToKorean(dmText);
+  let koreanText: string;
+  try {
+    koreanText = await translateDmToKorean(dmText, candidate.handle);
+  } catch (error) {
+    console.error("dm_candidate_prepare_failed", `handle=@${candidate.handle} stage=translation error=${safeError(error)}`);
+    throw new Error(`@${candidate.handle} · 한국어 번역 · ${safeError(error)}`);
+  }
 
   return {
     handle: candidate.handle,
@@ -130,7 +154,7 @@ export function selectPersonalizationBasis(candidate: DiscoveryCandidate): Perso
   return { source: best.source, text: compact(best.text, 700) };
 }
 
-export async function translateDmToKorean(japaneseText: string) {
+export async function translateDmToKorean(japaneseText: string, handle: string | null = null) {
   const cleanText = japaneseText.trim();
   if (!cleanText) throw new Error("번역할 일본어 DM이 비어 있습니다.");
   if (cleanText.length > 3000) throw new Error("일본어 DM이 너무 깁니다.");
@@ -147,18 +171,26 @@ export async function translateDmToKorean(japaneseText: string) {
   const groqKey = process.env.GROQ_API_KEY?.trim();
   if (groqKey) {
     try {
-      return await requestTranslation(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt);
+      return await requestTranslation(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt, {
+        provider: "groq",
+        stage: "translation",
+        handle,
+      });
     } catch (error) {
-      console.warn("dm_translation_groq_failed", safeError(error));
+      console.warn("dm_translation_groq_failed", `${contextLabel({ provider: "groq", stage: "translation", handle })} error=${safeError(error)}`);
     }
   }
 
   const scalewayKey = process.env.SCW_SECRET_KEY?.trim();
   if (scalewayKey) {
     try {
-      return await requestTranslation(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt);
+      return await requestTranslation(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt, {
+        provider: "scaleway",
+        stage: "translation",
+        handle,
+      });
     } catch (error) {
-      console.warn("dm_translation_scaleway_failed", safeError(error));
+      console.warn("dm_translation_scaleway_failed", `${contextLabel({ provider: "scaleway", stage: "translation", handle })} error=${safeError(error)}`);
     }
   }
 
@@ -204,70 +236,85 @@ async function generatePersonalizationLine(
     `확인된 원본 근거: ${basis.text}`,
   ].join("\n");
 
-  const failures: PersonalizationFailureKind[] = [];
+  const failures: PersonalizationFailure[] = [];
   const groqKey = process.env.GROQ_API_KEY?.trim();
 
   if (groqKey) {
     try {
-      const line = ensureSpecificPersonalization(await requestLine(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt));
+      const line = ensureSpecificPersonalization(await requestLine(GROQ_URL, groqKey, GROQ_DM_MODEL, prompt, {
+        provider: "groq",
+        stage: "personalization",
+        handle,
+      }));
       return { line, provider: "groq", model: GROQ_DM_MODEL };
     } catch (error) {
       if (error instanceof DmLineValidationError) {
-        logValidationFailure("groq", "initial", error);
+        logValidationFailure("groq", "initial", error, handle);
         try {
           const repairedLine = ensureSpecificPersonalization(await requestLine(
             GROQ_URL,
             groqKey,
             GROQ_DM_MODEL,
             buildCorrectionPrompt(prompt, error),
+            { provider: "groq", stage: "personalization_repair", handle },
           ));
           console.info("dm_groq_validation_repaired", `handle=@${handle} initial_code=${error.code}`);
           return { line: repairedLine, provider: "groq", model: GROQ_DM_MODEL };
         } catch (repairError) {
           if (repairError instanceof DmLineValidationError) {
-            logValidationFailure("groq", "repair", repairError);
-            failures.push("validation");
+            logValidationFailure("groq", "repair", repairError, handle);
+            failures.push({ provider: "groq", kind: "validation" });
           } else {
             const kind = classifyProviderFailure(repairError);
-            console.warn("dm_groq_repair_provider_failed", `kind=${kind} error=${safeError(repairError)}`);
-            failures.push(kind);
+            console.warn("dm_groq_repair_provider_failed", `handle=@${handle} stage=personalization_repair kind=${kind} error=${safeError(repairError)}`);
+            failures.push({ provider: "groq", kind });
           }
         }
       } else {
         const kind = classifyProviderFailure(error);
-        console.warn("dm_groq_provider_failed", `kind=${kind} error=${safeError(error)}`);
-        failures.push(kind);
+        console.warn("dm_groq_provider_failed", `handle=@${handle} stage=personalization kind=${kind} error=${safeError(error)}`);
+        failures.push({ provider: "groq", kind });
       }
     }
   } else {
-    console.warn("dm_groq_key_missing");
-    failures.push("key_missing");
+    console.warn("dm_groq_key_missing", `handle=@${handle} stage=personalization`);
+    failures.push({ provider: "groq", kind: "key_missing" });
   }
 
   const scalewayKey = process.env.SCW_SECRET_KEY?.trim();
   if (scalewayKey) {
     try {
-      const line = ensureSpecificPersonalization(await requestLine(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt));
+      const line = ensureSpecificPersonalization(await requestLine(SCALEWAY_URL, scalewayKey, SCALEWAY_DM_MODEL, prompt, {
+        provider: "scaleway",
+        stage: "personalization",
+        handle,
+      }));
       return { line, provider: "scaleway", model: SCALEWAY_DM_MODEL };
     } catch (error) {
       if (error instanceof DmLineValidationError) {
-        logValidationFailure("scaleway", "initial", error);
-        failures.push("validation");
+        logValidationFailure("scaleway", "initial", error, handle);
+        failures.push({ provider: "scaleway", kind: "validation" });
       } else {
         const kind = classifyProviderFailure(error);
-        console.warn("dm_scaleway_provider_failed", `kind=${kind} error=${safeError(error)}`);
-        failures.push(kind);
+        console.warn("dm_scaleway_provider_failed", `handle=@${handle} stage=personalization kind=${kind} error=${safeError(error)}`);
+        failures.push({ provider: "scaleway", kind });
       }
     }
   } else {
-    console.warn("dm_scaleway_key_missing");
-    failures.push("key_missing");
+    console.warn("dm_scaleway_key_missing", `handle=@${handle} stage=personalization`);
+    failures.push({ provider: "scaleway", kind: "key_missing" });
   }
 
   throw new Error(personalizationFailureMessage(failures));
 }
 
-async function requestLine(url: string, apiKey: string, model: string, prompt: string) {
+async function requestLine(
+  url: string,
+  apiKey: string,
+  model: string,
+  prompt: string,
+  context: LlmRequestContext,
+) {
   const response = await fetchWith429Retry(url, {
     method: "POST",
     headers: {
@@ -284,7 +331,7 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
       ],
     }),
     cache: "no-store",
-  });
+  }, context);
 
   if (!response.ok) {
     const detail = compact(await response.text(), 240);
@@ -297,7 +344,13 @@ async function requestLine(url: string, apiKey: string, model: string, prompt: s
   return normalizeModelLine(payload.choices?.[0]?.message?.content);
 }
 
-async function requestTranslation(url: string, apiKey: string, model: string, prompt: string) {
+async function requestTranslation(
+  url: string,
+  apiKey: string,
+  model: string,
+  prompt: string,
+  context: LlmRequestContext,
+) {
   const response = await fetchWith429Retry(url, {
     method: "POST",
     headers: {
@@ -314,7 +367,7 @@ async function requestTranslation(url: string, apiKey: string, model: string, pr
       ],
     }),
     cache: "no-store",
-  });
+  }, context);
 
   if (!response.ok) {
     const detail = compact(await response.text(), 240);
@@ -327,7 +380,7 @@ async function requestTranslation(url: string, apiKey: string, model: string, pr
   return normalizeKoreanTranslation(payload.choices?.[0]?.message?.content);
 }
 
-async function fetchWith429Retry(url: string, init: RequestInit) {
+async function fetchWith429Retry(url: string, init: RequestInit, context: LlmRequestContext) {
   for (let retry = 0; retry <= MAX_RATE_LIMIT_RETRIES; retry += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
@@ -342,13 +395,23 @@ async function fetchWith429Retry(url: string, init: RequestInit) {
       clearTimeout(timeout);
     }
 
+    const retryAfter = response.headers.get("retry-after");
     if (response.status !== 429 || retry === MAX_RATE_LIMIT_RETRIES) {
+      if (response.status === 429) {
+        console.warn(
+          "dm_llm_429_exhausted",
+          `${contextLabel(context)} status=429 retry_after=${formatHeaderValue(retryAfter)} retry_count=${retry} total_attempts=${retry + 1}`,
+        );
+      }
       return response;
     }
 
-    const delayMs = getRetryDelayMs(response.headers.get("retry-after"), retry);
+    const delayMs = getRetryDelayMs(retryAfter, retry);
     await response.text().catch(() => "");
-    console.warn("dm_llm_429_retry", `retry=${retry + 1} wait_ms=${delayMs}`);
+    console.warn(
+      "dm_llm_429_retry",
+      `${contextLabel(context)} status=429 retry_after=${formatHeaderValue(retryAfter)} retry=${retry + 1}/${MAX_RATE_LIMIT_RETRIES} wait_ms=${delayMs}`,
+    );
     await sleep(delayMs);
   }
 
@@ -356,22 +419,27 @@ async function fetchWith429Retry(url: string, init: RequestInit) {
 }
 
 function getRetryDelayMs(retryAfter: string | null, retry: number) {
-  let retryAfterMs: number | null = null;
-
   if (retryAfter) {
     const seconds = Number(retryAfter);
     if (Number.isFinite(seconds) && seconds >= 0) {
-      retryAfterMs = Math.ceil(seconds * 1000);
-    } else {
-      const retryAt = Date.parse(retryAfter);
-      if (Number.isFinite(retryAt)) {
-        retryAfterMs = Math.max(0, retryAt - Date.now());
-      }
+      return Math.ceil(seconds * 1000);
+    }
+
+    const retryAt = Date.parse(retryAfter);
+    if (Number.isFinite(retryAt)) {
+      return Math.max(0, retryAt - Date.now());
     }
   }
 
-  const fallbackMs = Math.min(10_000, 2_000 * (2 ** retry));
-  return Math.min(MAX_RETRY_DELAY_MS, Math.max(500, retryAfterMs ?? fallbackMs));
+  return Math.min(10_000, 2_000 * (2 ** retry));
+}
+
+function contextLabel(context: LlmRequestContext) {
+  return `provider=${context.provider} stage=${context.stage}${context.handle ? ` handle=@${context.handle}` : ""}`;
+}
+
+function formatHeaderValue(value: string | null) {
+  return value === null ? "none" : JSON.stringify(value);
 }
 
 function sleep(ms: number) {
@@ -452,11 +520,16 @@ function buildCorrectionPrompt(originalPrompt: string, error: DmLineValidationEr
   ].join("\n");
 }
 
-function logValidationFailure(provider: "groq" | "scaleway", stage: "initial" | "repair", error: DmLineValidationError) {
+function logValidationFailure(
+  provider: LlmProvider,
+  stage: "initial" | "repair",
+  error: DmLineValidationError,
+  handle: string,
+) {
   const blocked = error.blockedExpression ? ` blocked=${compact(error.blockedExpression, 80)}` : "";
   console.warn(
     `dm_${provider}_validation_failed`,
-    `stage=${stage} code=${error.code}${blocked} output=${compact(error.rejectedLine, 220)}`,
+    `handle=@${handle} stage=${stage} code=${error.code}${blocked} output=${compact(error.rejectedLine, 220)}`,
   );
 }
 
@@ -470,23 +543,32 @@ function classifyProviderFailure(error: unknown): PersonalizationFailureKind {
   return "provider_error";
 }
 
-function personalizationFailureMessage(failures: PersonalizationFailureKind[]) {
-  if (failures.length > 0 && failures.every((failure) => failure === "key_missing")) {
-    return "DM 개인화 생성 실패: LLM API 키가 설정되지 않았습니다.";
+function personalizationFailureMessage(failures: PersonalizationFailure[]) {
+  const kinds = failures.map((failure) => failure.kind);
+  const detail = failures.length
+    ? ` · ${failures.map((failure) => `${providerDisplayName(failure.provider)} ${failure.kind}`).join(" / ")}`
+    : "";
+
+  if (kinds.length > 0 && kinds.every((failure) => failure === "key_missing")) {
+    return `DM 개인화 생성 실패: LLM API 키가 설정되지 않았습니다.${detail}`;
   }
-  if (failures.includes("auth")) {
-    return "DM 개인화 생성 실패: LLM provider 인증에 실패했습니다.";
+  if (kinds.includes("auth")) {
+    return `DM 개인화 생성 실패: LLM provider 인증에 실패했습니다.${detail}`;
   }
-  if (failures.includes("rate_limit_429")) {
-    return "DM 개인화 생성 실패: LLM provider rate limit(429)이 재시도 후에도 해소되지 않았습니다.";
+  if (kinds.includes("rate_limit_429")) {
+    return `DM 개인화 생성 실패: LLM provider rate limit(429)이 재시도 후에도 해소되지 않았습니다.${detail}`;
   }
-  if (failures.includes("validation")) {
-    return "DM 개인화 생성 실패: 생성 문장이 품질 검증을 통과하지 못했습니다.";
+  if (kinds.includes("validation")) {
+    return `DM 개인화 생성 실패: 생성 문장이 품질 검증을 통과하지 못했습니다.${detail}`;
   }
-  if (failures.includes("timeout")) {
-    return "DM 개인화 생성 실패: LLM provider 요청이 timeout 됐습니다.";
+  if (kinds.includes("timeout")) {
+    return `DM 개인화 생성 실패: LLM provider 요청이 timeout 됐습니다.${detail}`;
   }
-  return "DM 개인화 생성 실패: LLM provider 요청에 실패했습니다.";
+  return `DM 개인화 생성 실패: LLM provider 요청에 실패했습니다.${detail}`;
+}
+
+function providerDisplayName(provider: LlmProvider) {
+  return provider === "groq" ? "Groq" : "Scaleway";
 }
 
 function normalizeKoreanTranslation(value: string | null | undefined) {
