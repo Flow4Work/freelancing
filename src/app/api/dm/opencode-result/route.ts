@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
+import { isValidHandle } from "@/lib/discovery/instagram";
 import { recordDmOpenCodeResult } from "@/lib/supabase/dm-contacts";
 
 export const runtime = "nodejs";
 
 const bodySchema = z.object({
   contactId: z.string().uuid(),
-  handle: z.string().min(1).max(80),
+  handle: z.string().min(1).max(30).regex(/^[A-Za-z0-9._]+$/).refine((handle) => isValidHandle(handle), "Instagram ID가 올바르지 않습니다."),
   status: z.enum(["success", "failed"]),
   error: z.string().max(500).optional().nullable(),
 });
