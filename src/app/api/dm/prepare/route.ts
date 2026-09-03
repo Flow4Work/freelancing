@@ -3,7 +3,6 @@ import { z } from "zod";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { prepareCandidateDm, type PreparedDm } from "@/lib/dm/prepare";
 import { getDmPreparationCandidates, savePreparedDm } from "@/lib/supabase/candidates";
-import { listUnsentDmContacts } from "@/lib/supabase/dm-contacts";
 
 export const runtime = "nodejs";
 
@@ -48,81 +47,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: `DM 준비 가능한 후보 수가 일치하지 않습니다: ${candidates.length}/${handles.length}${missing.length ? ` · ${missing.map((handle) => `@${handle}`).join(", ")}` : ""}` }, { status: 409 });
     }
 
-    if (parsed.data.forceRegenerate) {
-      const regenerated = await mapWithConcurrency(candidates, 1, prepareCandidateDm);
-      await savePreparedDm(parsed.data.category, regenerated);
-      return NextResponse.json(buildPreparedResponse(regenerated.map(toResponseItem), false));
-    }
+    // 이 API까지 호출됐다는 것은 현재 화면의 미승인 동일-handle 초안을 재사용할 조건이 아니라는 뜻이다.
+    // 승인/완료된 과거 contact history는 새 DM 준비를 막거나 재사용하지 않는다.
+    const prepared = await mapWithConcurrency(candidates, 1, prepareCandidateDm);
+    await savePreparedDm(parsed.data.category, prepared);
 
-    const contacts = await listUnsentDmContacts(parsed.data.category);
-    const reusableByHandle = new Map<string, PreparedResponseItem>();
-    const generateCandidates: typeof candidates = [];
-    const incompleteStoredHandles: string[] = [];
-
-    for (const candidate of candidates) {
-      const hasAnyStoredDm = Boolean(
-        candidate.dmText
-        || candidate.dmGeneratedAt
-        || candidate.dmProvider
-        || candidate.dmModel,
-      );
-      const hasCompleteStoredDm = Boolean(
-        candidate.dmText
-        && candidate.dmGeneratedAt
-        && candidate.dmProvider
-        && candidate.dmModel,
-      );
-
-      if (!hasAnyStoredDm) {
-        generateCandidates.push(candidate);
-        continue;
-      }
-      if (!hasCompleteStoredDm) {
-        incompleteStoredHandles.push(candidate.handle);
-        continue;
-      }
-
-      const contact = contacts.find((item) => (
-        item.handle === candidate.handle
-        && sameInstant(item.generatedAt, candidate.dmGeneratedAt)
-        && Boolean(item.japaneseText.trim())
-        && Boolean(item.koreanText.trim())
-      ));
-      if (!contact) {
-        incompleteStoredHandles.push(candidate.handle);
-        continue;
-      }
-
-      reusableByHandle.set(candidate.handle, {
-        handle: candidate.handle,
-        japaneseText: contact.japaneseText,
-        koreanText: contact.koreanText,
-        generatedAt: candidate.dmGeneratedAt as string,
-        provider: candidate.dmProvider as string,
-        model: candidate.dmModel as string,
-      });
-    }
-
-    if (incompleteStoredHandles.length) {
-      return NextResponse.json({
-        ok: false,
-        error: `기존 DM 초안은 있지만 현재 작업의 전체 내용을 안전하게 복구하지 못했습니다. 자동 재생성하지 않았습니다. 명시적인 다시 생성을 사용하세요: ${incompleteStoredHandles.map((handle) => `@${handle}`).join(", ")}`,
-      }, { status: 409 });
-    }
-
-    const generated = generateCandidates.length
-      ? await mapWithConcurrency(generateCandidates, 1, prepareCandidateDm)
-      : [];
-    if (generated.length) await savePreparedDm(parsed.data.category, generated);
-    const generatedByHandle = new Map(generated.map((item) => [item.handle, toResponseItem(item)]));
-
-    const items = handles.map((handle) => {
-      const item = reusableByHandle.get(handle) ?? generatedByHandle.get(handle);
-      if (!item) throw new Error(`@${handle} DM 준비 결과를 찾지 못했습니다.`);
-      return item;
-    });
-
-    return NextResponse.json(buildPreparedResponse(items, generated.length === 0));
+    return NextResponse.json(buildPreparedResponse(prepared.map(toResponseItem)));
   } catch (error) {
     console.error("dm_prepare_failed", error);
     return NextResponse.json({
@@ -143,14 +73,14 @@ function toResponseItem(item: PreparedDm): PreparedResponseItem {
   };
 }
 
-function buildPreparedResponse(items: PreparedResponseItem[], reused: boolean) {
+function buildPreparedResponse(items: PreparedResponseItem[]) {
   return {
     ok: true,
     preparedCount: items.length,
     providerCounts: countProviders(items),
     models: [...new Set(items.map((item) => item.model))],
     items,
-    reused,
+    reused: false,
   };
 }
 
@@ -159,13 +89,6 @@ function countProviders(items: Array<{ provider: string }>) {
     counts[item.provider] = (counts[item.provider] ?? 0) + 1;
     return counts;
   }, {});
-}
-
-function sameInstant(first: string, second: string | null | undefined) {
-  if (!second) return false;
-  const firstTime = Date.parse(first);
-  const secondTime = Date.parse(second);
-  return Number.isFinite(firstTime) && Number.isFinite(secondTime) && firstTime === secondTime;
 }
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>) {
