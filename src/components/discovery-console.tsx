@@ -287,11 +287,14 @@ export function DiscoveryConsole() {
           ? items.find((item) => item.id === watchedAutomationJobId)
           : null;
         if (watched && watched.status !== "pending") {
+          const completionCandidates = watched.status === "completed"
+            ? await reloadCandidates(category)
+            : refreshedCandidates;
           setWatchedAutomationJobId(null);
           setAutomationWatchUntil(null);
           setToast({
             kind: watched.status === "failed" ? "error" : "success",
-            message: automationCompletionMessage(watched, refreshedCandidates),
+            message: automationCompletionMessage(watched, completionCandidates),
           });
         }
       } catch {
@@ -345,7 +348,6 @@ export function DiscoveryConsole() {
   const duplicatePassedTotal = candidates.filter((candidate) => candidateState(candidate) === "duplicate_passed").length;
   const finalVerificationTotal = candidates.filter((candidate) => candidateState(candidate) === "final_verification").length;
   const sendReadyContacts = dmContacts.filter((contact) => contact.openCodeStatus === "success" && !contact.sentAt);
-  const excludedTotal = candidates.length - visibleCandidates.length;
   const pendingDmDrafts = dmDrafts.filter((draft) => !draft.approved);
 
   const action = statusFilter === "verification_needed" || statusFilter === "recommended"
@@ -833,16 +835,11 @@ export function DiscoveryConsole() {
               <span className="summary-loading">누적 후보 불러오는 중…</span>
             ) : (
               <>
-                <span className="summary-group-label">후보</span>
                 <span className="summary-chip">전체 <strong>{visibleCandidates.length}</strong></span>
                 <span className="summary-chip">검증 필요 <strong>{verificationNeededTotal}</strong></span>
                 <span className="summary-chip">추천 <strong>{recommendedTotal}</strong></span>
-                <span className="summary-group-spacer" aria-hidden="true" />
-                <span className="summary-group-label">진행</span>
                 <span className="summary-chip">중복 통과 <strong>{duplicatePassedTotal}</strong></span>
                 <span className="summary-chip">최종 <strong>{finalVerificationTotal}</strong></span>
-                <span className="summary-chip">발송 <strong>{sendReadyContacts.length}</strong></span>
-                <span className="summary-chip">제외 <strong>{excludedTotal}</strong></span>
               </>
             )}
           </div>
