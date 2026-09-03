@@ -280,8 +280,9 @@ export async function manuallyExcludeCandidate(category: SearchCategory, rawHand
 
   const current = (await listCandidates(category)).find((candidate) => candidate.handle === handle);
   if (!current) throw new Error(`@${handle} 후보를 찾지 못했습니다.`);
-  if (getCandidateViewState(current) !== "verification_needed") {
-    throw new Error("수동 제외는 검증 필요 후보에서만 실행할 수 있습니다.");
+  const currentState = getCandidateViewState(current);
+  if (currentState !== "verification_needed" && currentState !== "duplicate_passed") {
+    throw new Error("수동 제외는 검증 필요 또는 중복 통과 후보에서만 실행할 수 있습니다.");
   }
 
   const supabase = getSupabaseAdmin();
