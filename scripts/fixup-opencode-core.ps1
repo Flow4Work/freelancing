@@ -69,9 +69,27 @@ function Get-NewText([string]$Path, [long]$Offset) {
     }
 }
 
+function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
+    $Parts = New-Object 'System.Collections.Generic.List[string]'
+
+    if (-not [string]::IsNullOrWhiteSpace($StderrText)) {
+        [void]$Parts.Add($StderrText)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($StdoutText)) {
+        foreach ($Line in ($StdoutText -split "`r?`n")) {
+            if ($Line -match '"type"\s*:\s*"error"') {
+                [void]$Parts.Add($Line)
+            }
+        }
+    }
+
+    return ($Parts -join [Environment]::NewLine)
+}
+
 function Test-QuotaExhaustion([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(freeusagelimiterror|free(?:\s+\w+){0,3}\s+(?:limit|quota|usage)(?:\s+\w+){0,4}\s+(?:reached|exceeded|exhausted)|free usage exceeded|subscribe to go|add credits https://opencode\.ai/zen|insufficient[_ -]?quota|quota(?:\s+\w+){0,4}\s+(?:exceeded|exhausted|insufficient|reached)|(?:credit|credits|balance)(?:\s+\w+){0,4}\s+(?:exhausted|insufficient|depleted)|(?:monthly|daily|spend|spending)(?:\s+\w+){0,5}\s+(?:limit|quota)(?:\s+\w+){0,3}\s+(?:reached|exceeded|exhausted))'
+    return $Text -match '(?i)(freeusagelimiterror|free_tier_limit|free(?:\s+\w+){0,3}\s+(?:limit|quota|usage)(?:\s+\w+){0,4}\s+(?:reached|exceeded|exhausted)|free usage exceeded|subscribe to go|add credits https://opencode\.ai/zen|insufficient[_ -]?quota|quota(?:\s+\w+){0,4}\s+(?:exceeded|exhausted|insufficient|reached)|(?:credit|credits|balance)(?:\s+\w+){0,4}\s+(?:exhausted|insufficient|depleted)|(?:monthly|daily|spend|spending)(?:\s+\w+){0,5}\s+(?:limit|quota)(?:\s+\w+){0,3}\s+(?:reached|exceeded|exhausted))'
 }
 
 function Get-MeaningfulText([string]$Text) {
@@ -147,7 +165,7 @@ for ($i = 0; $i -lt $Arguments.Count - 1; $i++) {
 $IsRun = $Arguments.Count -gt 0 -and [string]$Arguments[0] -eq 'run'
 $IsPrimaryRun = $IsRun -and $Model -eq $PrimaryModel
 
-if ($IsRun -and -not $IsPrimaryRun) {
+if ($IsRun) {
     $HasAutoApproval = ($Arguments -contains '--auto') -or ($Arguments -contains '--dangerously-skip-permissions') -or ($Arguments -contains '--yolo')
     if (-not $HasAutoApproval) {
         $Arguments += '--auto'
@@ -186,7 +204,7 @@ try {
         -PassThru
 }
 catch {
-    [Console]::Error.WriteLine("Provider unavailable: primary OpenCode start failed: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("Provider unavailable: primary OpenCode start failed. $($_.Exception.Message)")
     exit 1
 }
 
@@ -213,7 +231,8 @@ try {
         }
 
         $Combined = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
-        if (Test-QuotaExhaustion $Combined) {
+        $SignalText = Get-OpenCodeErrorSignal ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
+        if (Test-QuotaExhaustion $SignalText) {
             $DetectedQuota = $true
             Set-Circuit 'quota' $QuotaCooldownMinutes
             Stop-ChildTree $Child.Id
@@ -240,8 +259,8 @@ try {
     if (-not [string]::IsNullOrEmpty([string]$OutDelta.Text)) { [Console]::Out.Write([string]$OutDelta.Text) }
     if (-not [string]::IsNullOrEmpty([string]$ErrDelta.Text)) { [Console]::Error.Write([string]$ErrDelta.Text) }
 
-    $Tail = @([string]$OutDelta.Text, [string]$ErrDelta.Text) -join [Environment]::NewLine
-    if (Test-QuotaExhaustion $Tail) {
+    $SignalText = Get-OpenCodeErrorSignal ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
+    if (Test-QuotaExhaustion $SignalText) {
         $DetectedQuota = $true
         Set-Circuit 'quota' $QuotaCooldownMinutes
         [Console]::Error.WriteLine("Free usage exceeded: primary model quota/credit exhausted; circuit cached for $QuotaCooldownMinutes minutes.")
