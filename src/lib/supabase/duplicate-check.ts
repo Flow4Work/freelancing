@@ -1,4 +1,4 @@
-import type { DuplicateCheckStatus, SearchCategory } from "@/lib/discovery/types";
+import type { DuplicateCheckStatus, FollowerSource, SearchCategory } from "@/lib/discovery/types";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { getSupabaseAdmin } from "./admin";
 
@@ -19,7 +19,7 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
 
   const handles = [...new Set(normalized.map((result) => result.handle))];
   const [{ data: candidates, error: candidateError }, { data: contacted, error: contactedError }] = await Promise.all([
-    supabase.from("creator_candidates").select("normalized_handle, followers").eq("category", category).in("normalized_handle", handles),
+    supabase.from("creator_candidates").select("normalized_handle, followers, followers_source").eq("category", category).in("normalized_handle", handles),
     supabase.from("creator_contacted_handles").select("normalized_handle").in("normalized_handle", handles),
   ]);
 
@@ -30,6 +30,10 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
   const existingFollowers = new Map<string, number | null>((candidates ?? []).map((row): [string, number | null] => [
     String(row.normalized_handle),
     typeof row.followers === "number" && Number.isFinite(row.followers) ? row.followers : null,
+  ]));
+  const existingFollowerSources = new Map<string, FollowerSource | null>((candidates ?? []).map((row): [string, FollowerSource | null] => [
+    String(row.normalized_handle),
+    normalizeFollowerSource(row.followers_source),
   ]));
   const blocked = new Set((contacted ?? []).map((row) => String(row.normalized_handle)));
   const now = new Date().toISOString();
@@ -45,23 +49,29 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
       updated_at: now,
     };
 
-    // 후보 찾기에서 확보한 followers는 그대로 보존한다.
-    // 비어 있는 경우에만 available 판정 뒤 Instagram에서 실측한 값을 보강한다.
-    const currentFollowers = existingFollowers.get(result.handle) ?? null;
-    if (
-      result.duplicateStatus === "available"
-      && currentFollowers === null
-      && typeof result.followers === "number"
-      && Number.isFinite(result.followers)
-      && result.followers >= 0
-    ) {
-      patch.followers = Math.round(result.followers);
-    }
-
     if (result.duplicateStatus === "duplicate" || result.duplicateStatus === "protected") {
       patch.discovery_status = "hard_reject";
       patch.verification_status = "rejected";
-      patch.verification_note = "FixUp 중복/보호목록";
+      patch.verification_note = result.duplicateStatus === "duplicate" ? "FixUp 중복" : "보호 목록";
+    } else if (result.duplicateStatus === "available") {
+      const currentFollowers = existingFollowers.get(result.handle) ?? null;
+      const currentSource = existingFollowerSources.get(result.handle) ?? null;
+      const submittedFollowers = normalizeSubmittedFollowers(result.followers);
+
+      let exactFollowers: number | null = null;
+      if (submittedFollowers !== null) {
+        exactFollowers = submittedFollowers;
+        patch.followers = submittedFollowers;
+        patch.followers_source = "instagram";
+      } else if (currentFollowers !== null && currentSource === "instagram") {
+        exactFollowers = currentFollowers;
+      }
+
+      if (exactFollowers !== null && exactFollowers >= 100_000) {
+        patch.discovery_status = "hard_reject";
+        patch.verification_status = "rejected";
+        patch.verification_note = `팔로워 초과 제외 · 팔로워 100,000 이상 (${exactFollowers.toLocaleString()}명)`;
+      }
     }
 
     const { error } = await supabase
@@ -75,4 +85,13 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
   }
 
   return { updated, ignored: results.length - updated };
+}
+
+function normalizeSubmittedFollowers(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  return Math.round(value);
+}
+
+function normalizeFollowerSource(value: unknown): FollowerSource | null {
+  return value === "search" || value === "instagram" ? value : null;
 }
