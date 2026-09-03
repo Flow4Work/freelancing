@@ -172,9 +172,9 @@ $StdoutFile = Join-Path $Root ("primary-$Id.stdout.log")
 $StderrFile = Join-Path $Root ("primary-$Id.stderr.log")
 
 $env:FIXUP_REAL_OPENCODE = $RealOpenCode
-$ArgsJson = $Arguments | ConvertTo-Json -Compress
+$ArgsJson = ConvertTo-Json -InputObject @($Arguments) -Compress
 $env:FIXUP_REAL_OPENCODE_ARGS = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ArgsJson))
-$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_REAL_OPENCODE_ARGS)); $a=@($json | ConvertFrom-Json); & $env:FIXUP_REAL_OPENCODE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
+$ChildCommand = '$ErrorActionPreference="Stop"; $json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:FIXUP_REAL_OPENCODE_ARGS)); $parsed=ConvertFrom-Json -InputObject $json; $a=@($parsed); & $env:FIXUP_REAL_OPENCODE @a; $c=$LASTEXITCODE; if ($null -eq $c) { $c=0 }; exit $c'
 $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ChildCommand))
 
 try {
