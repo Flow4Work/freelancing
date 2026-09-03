@@ -123,12 +123,20 @@ export async function listUnsentDmContacts(category: SearchCategory) {
     .from("creator_dm_contact_history")
     .select(CONTACT_COLUMNS)
     .eq("category", category)
-    .is("sent_at", null)
     .order("approved_at", { ascending: false })
-    .limit(100);
+    .order("id", { ascending: false })
+    .limit(1000);
 
   if (error) throw new Error(`DM 연락 이력 조회 실패: ${error.message}`);
-  return (data ?? []).map(mapContact);
+
+  const latestByHandle = new Map<string, DmContact>();
+  for (const row of data ?? []) {
+    const contact = mapContact(row);
+    if (!latestByHandle.has(contact.handle)) {
+      latestByHandle.set(contact.handle, contact);
+    }
+  }
+  return [...latestByHandle.values()];
 }
 
 export async function getDmContact(id: string) {
