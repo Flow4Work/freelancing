@@ -35,11 +35,15 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const scriptPath = path.join(root, `${input.jobId}.ps1`);
   const invokedPath = path.join(root, `${input.jobId}.invoked`);
   const failedPath = path.join(root, `${input.jobId}.failed`);
+  const openCodeLogPath = path.join(root, `${input.jobId}.opencode.log`);
+  const watcherPath = path.join(root, `${input.jobId}.watch.ps1`);
   const duplicateJob = input.title === "중복 확인";
 
   await Promise.all([
     rm(invokedPath, { force: true }),
     rm(failedPath, { force: true }),
+    rm(openCodeLogPath, { force: true }),
+    rm(watcherPath, { force: true }),
   ]);
 
   const reliabilityInstruction = duplicateJob
@@ -63,6 +67,7 @@ $OpenCode = ${psQuote(command)}
 $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
+$OpenCodeLogFile = ${psQuote(openCodeLogPath)}
 $JobId = ${psQuote(input.jobId)}
 $JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
 
@@ -80,6 +85,16 @@ function Set-FixUpJobFailed([string]$Message) {
   }
 }
 
+function Test-OpenCodeQuotaFailure {
+  try {
+    if (-not (Test-Path -LiteralPath $OpenCodeLogFile)) { return $false }
+    $Text = Get-Content -LiteralPath $OpenCodeLogFile -Raw -ErrorAction Stop
+    return $Text -match '(?i)(\b429\b|INSUFFICIENT[_ ]QUOTA|rate[ -]?limit|quota[ -]?(?:exceeded|insufficient)|insufficient[ -]?(?:credit|quota)|credits?[ -]?(?:exhausted|insufficient))'
+  } catch {
+    return $false
+  }
+}
+
 try {
   $null = Get-Command $OpenCode -ErrorAction Stop
   if (-not (Test-Path -LiteralPath $PromptFile)) {
@@ -94,22 +109,39 @@ try {
   Write-Host ""
 
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
+  $TranscriptStarted = $false
+  try {
+    Start-Transcript -Path $OpenCodeLogFile -Force | Out-Null
+    $TranscriptStarted = $true
+  } catch {}
+
   & $OpenCode run ${psQuote(openCodeInstruction)} --file $PromptFile
   $Code = $LASTEXITCODE
   if ($null -eq $Code) { $Code = 0 }
+  if ($TranscriptStarted) {
+    try { Stop-Transcript | Out-Null } catch {}
+  }
 
   $Job = $null
   try { $Job = Get-FixUpJobStatus } catch {}
 
   if ($null -eq $Job) {
-    $FailureMessage = if ($Code -ne 0) { "OpenCode 종료 코드 $Code, 작업 상태 조회 실패" } else { "OpenCode 종료 후 작업 완료 상태를 확인하지 못했습니다." }
+    $FailureMessage = if ($Code -ne 0 -and (Test-OpenCodeQuotaFailure)) {
+      "OpenCode provider 429/크레딧 부족, 작업 상태 조회 실패"
+    } elseif ($Code -ne 0) {
+      "OpenCode 종료 코드 $Code, 작업 상태 조회 실패"
+    } else {
+      "OpenCode 종료 후 작업 완료 상태를 확인하지 못했습니다."
+    }
     $null = Set-FixUpJobFailed $FailureMessage
     throw $FailureMessage
   }
 
   if ($Job.status -ne "completed") {
     $Progress = "$($Job.processedCount)/$($Job.totalCount)"
-    $FailureMessage = if ($Code -ne 0) {
+    $FailureMessage = if ($Code -ne 0 -and (Test-OpenCodeQuotaFailure)) {
+      "OpenCode provider 429/크레딧 부족. 저장 완료 $Progress"
+    } elseif ($Code -ne 0) {
       "OpenCode가 종료 코드 $Code 로 중단되었습니다. 저장 완료 $Progress"
     } elseif ($Job.status -eq "failed" -and $Job.failureMessage) {
       [string]$Job.failureMessage
@@ -128,6 +160,9 @@ try {
   exit 0
 }
 catch {
+  if ($TranscriptStarted) {
+    try { Stop-Transcript | Out-Null } catch {}
+  }
   $FailureMessage = $_.Exception.Message
   try {
     $Current = Get-FixUpJobStatus
@@ -172,8 +207,68 @@ catch {
 
   await waitForOpenCodeInvocation(invokedPath, failedPath);
   await rm(invokedPath, { force: true });
+  await launchExitWatcher({
+    processId,
+    jobId: input.jobId,
+    openCodeLogPath,
+    watcherPath,
+  });
 
   return { command, promptPath, processId };
+}
+
+async function launchExitWatcher(input: {
+  processId: number;
+  jobId: string;
+  openCodeLogPath: string;
+  watcherPath: string;
+}) {
+  const watcher = `$ErrorActionPreference = "SilentlyContinue"
+$TargetPid = ${input.processId}
+$JobId = ${psQuote(input.jobId)}
+$OpenCodeLogFile = ${psQuote(input.openCodeLogPath)}
+$JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
+
+Wait-Process -Id $TargetPid -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+$Job = $null
+try { $Job = Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10 } catch {}
+if ($null -eq $Job -or $Job.status -ne "pending") { exit 0 }
+
+$FailureMessage = "OpenCode/model 응답 정지 또는 실행 창 종료"
+try {
+  if (Test-Path -LiteralPath $OpenCodeLogFile) {
+    $Text = Get-Content -LiteralPath $OpenCodeLogFile -Raw -ErrorAction Stop
+    if ($Text -match '(?i)(\b429\b|INSUFFICIENT[_ ]QUOTA|rate[ -]?limit|quota[ -]?(?:exceeded|insufficient)|insufficient[ -]?(?:credit|quota)|credits?[ -]?(?:exhausted|insufficient))') {
+      $FailureMessage = "OpenCode provider 429/크레딧 부족"
+    }
+  }
+} catch {}
+
+try {
+  $Body = @{ jobId = $JobId; error = $FailureMessage } | ConvertTo-Json -Compress
+  Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10 | Out-Null
+} catch {}
+`;
+
+  await writeFile(input.watcherPath, `\uFEFF${watcher}`, { encoding: "utf8" });
+  const watcherCommand = `$p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",${psQuote(input.watcherPath)}) -WindowStyle Hidden -PassThru; [Console]::Out.Write($p.Id)`;
+  const started = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-Command", watcherCommand],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5000,
+    },
+  );
+
+  if (started.error || started.status !== 0) {
+    const detail = (started.stderr || started.stdout || "").trim();
+    console.warn("automation_exit_watcher_start_failed", detail || started.error?.message || "unknown_error");
+  }
 }
 
 async function waitForOpenCodeInvocation(invokedPath: string, failedPath: string) {
