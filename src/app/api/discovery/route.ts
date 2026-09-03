@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "SERPER_API_KEY 또는 SERPAPI_API_KEY 중 하나를 먼저 설정해주세요." }, { status: 503 });
     }
     if (error instanceof GoogleSearchFailedError) {
-      return NextResponse.json({ error: "Serper와 SerpApi 검색이 모두 실패했습니다. 잠시 후 다시 시도해주세요." }, { status: 502 });
+      return NextResponse.json({ error: "설정된 Google 검색 API 호출이 모두 실패했습니다. 잠시 후 다시 시도해주세요." }, { status: 502 });
     }
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "검색 조건이 올바르지 않습니다.", details: error.issues }, { status: 400 });
