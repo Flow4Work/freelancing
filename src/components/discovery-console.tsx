@@ -87,7 +87,7 @@ type AutomationHistoryGroup = {
 
 type AutomationHistoryItem = {
   id: string;
-  mode: AutomationMode;
+  mode: AutomationMode | "discovery";
   status: "pending" | "completed" | "failed";
   candidateCount: number;
   processedCount: number;
@@ -101,6 +101,8 @@ type AutomationHistoryItem = {
   unresolvedCount: number;
   groups: AutomationHistoryGroup[];
   exactSnapshot: boolean;
+  runNo?: number;
+  discoverySummary?: string;
 };
 
 type AutomationHistoryResponse = {
@@ -314,12 +316,21 @@ export function DiscoveryConsole() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const latestDmContactByHandle = useMemo(
+    () => new Map(dmContacts.map((contact) => [contact.handle, contact])),
+    [dmContacts],
+  );
+
   function candidateState(candidate: DiscoveryCandidate): CandidateViewState {
-    return getCandidateViewState(candidate);
+    const state = getCandidateViewState(candidate);
+    if (state !== "final_verification") return state;
+    const latestContact = latestDmContactByHandle.get(candidate.handle);
+    if (!latestContact || latestContact.openCodeStatus === "failed") return state;
+    return "unmapped";
   }
 
   const visibleCandidates = useMemo(
-    () => candidates.filter((candidate) => candidateState(candidate) !== "unmapped"),
+    () => candidates.filter((candidate) => getCandidateViewState(candidate) !== "unmapped"),
     [candidates],
   );
 
@@ -327,7 +338,7 @@ export function DiscoveryConsole() {
     if (statusFilter === "send_confirmation") return [];
     if (statusFilter === "all") return visibleCandidates;
     return visibleCandidates.filter((candidate) => candidateState(candidate) === statusFilter);
-  }, [visibleCandidates, statusFilter]);
+  }, [latestDmContactByHandle, visibleCandidates, statusFilter]);
 
   const verificationNeededTotal = candidates.filter((candidate) => candidateState(candidate) === "verification_needed").length;
   const recommendedTotal = candidates.filter((candidate) => candidateState(candidate) === "recommended").length;
@@ -412,6 +423,7 @@ export function DiscoveryConsole() {
       const payload = await response.json() as DiscoveryResponse & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "검색에 실패했습니다.");
       await reloadCandidates(category);
+      if (historyOpen) setHistoryItems(await fetchHistoryItems());
       setToast({ kind: "success", message: `${payload.runNo}차 검색 · ${payload.candidates.length}명 신규/근거 보강` });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "검색에 실패했습니다.";
@@ -1263,6 +1275,7 @@ function duplicateSourceBadge(candidate: DiscoveryCandidate) {
 }
 
 function historyTitle(item: AutomationHistoryItem) {
+  if (item.mode === "discovery") return `후보 찾기 ${item.runNo ?? "?"}차 · ${item.destinationCount}명 신규/근거 보강`;
   const action = item.mode === "duplicate" ? "중복 확인" : "최종 검증";
   if (item.status === "pending") return `${action} ${item.processedCount}/${item.candidateCount} 진행 중`;
   if (item.status === "failed") return `${action} ${item.processedCount}/${item.candidateCount} 실패`;
@@ -1270,6 +1283,7 @@ function historyTitle(item: AutomationHistoryItem) {
 }
 
 function historyResultLine(item: AutomationHistoryItem) {
+  if (item.mode === "discovery") return item.discoverySummary ?? `신규/근거 보강 ${item.destinationCount}명`;
   if (item.status === "pending") {
     return item.processedCount > 0 ? `현재 ${item.processedCount}명 결과 저장 완료` : "첫 결과를 기다리는 중입니다.";
   }
@@ -1328,6 +1342,13 @@ function pad2(value: number) {
 
 function HistoryDetail({ item }: { item: AutomationHistoryItem }) {
   if (item.status === "pending") return null;
+  if (item.mode === "discovery") {
+    return (
+      <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2", color: "#6b7684", lineHeight: 1.45 }}>
+        {item.discoverySummary ?? `신규/근거 보강 ${item.destinationCount}명`}
+      </span>
+    );
+  }
   return (
     <span style={{ display: "block", marginTop: 10, paddingTop: 9, borderTop: "1px solid #edf0f2" }}>
       <span style={{ display: "block", marginBottom: 7, color: "#6b7684", fontSize: 11 }}>
