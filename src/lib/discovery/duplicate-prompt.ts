@@ -16,7 +16,7 @@ export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], cate
 
   return `playwright_b의 현재 Chrome 세션만 사용한다.
 
-목적: 후보 ID를 FixUp 중복 페이지에서 먼저 전부 판정한 뒤, 필요한 available 후보만 Instagram에서 followers를 확인하고 결과를 FixUp Scout에 batch로 제출한다.
+목적: 후보 ID를 FixUp 중복 페이지에서 먼저 전부 판정한 뒤, 필요한 available 후보만 Instagram 프로필 존재 여부와 정확한 followers를 확인하고 결과를 FixUp Scout에 batch로 제출한다.
 중복 페이지: ${FIXUP_DUPLICATE_CHECK_URL}
 
 로그인:
@@ -32,9 +32,9 @@ ${candidateRows}
 2. 후보 전원을 FixUp 폼에서 연속으로 중복 판정한다. 이 단계에서는 Instagram을 절대 열지 않는다.
 3. 각 후보의 FixUp 판정 결과를 메모리에 유지한다: available / duplicate / protected / unknown, 실제 화면 문구 duplicateMessage.
 4. 후보 전원의 FixUp 판정이 끝난 뒤 duplicate/protected/unknown 후보를 한 batch로 먼저 POST한다. 해당 그룹이 비어 있으면 POST하지 않는다.
-5. 그 다음 available 후보만 처리한다. followersSource=instagram이고 followers가 숫자면 Instagram을 다시 열지 않는다. followersSource=search이거나 followers=null인 후보만 Instagram 프로필에서 정확한 followers만 확인한다.
+5. 그 다음 available 후보만 처리한다. followersSource=instagram이고 followers가 숫자면 Instagram을 다시 열지 않는다. followersSource=search이거나 followers=null인 후보만 Instagram 프로필을 열어 계정/페이지 존재 여부와 정확한 followers를 확인한다.
 6. Instagram 확인 대상은 Instagram A → Instagram B → Instagram C 순서로 연속 처리한다. 다시 FixUp 페이지로 돌아가지 않는다.
-7. available 후보 전부의 followers 처리가 끝나면 available 후보 결과 전체를 두 번째 batch로 POST한다. 해당 그룹이 비어 있으면 POST하지 않는다.
+7. available 후보 전부의 Instagram 확인이 끝나면 available 후보 결과 전체를 두 번째 batch로 POST한다. 해당 그룹이 비어 있으면 POST하지 않는다.
 8. 마지막 POST 응답의 completed:true를 확인한 뒤 종료한다.
 
 절대 금지되는 왕복:
@@ -76,27 +76,41 @@ ${candidateRows}
 - duplicate / protected / unknown 후보만 모아 http://localhost:3000/api/duplicate/results 로 한 번에 POST한다.
 - 그룹이 비어 있으면 1차 POST를 생략한다.
 - followers는 이 단계에서 새로 확인하지 않는다. null 또는 필드 생략 가능하다.
+- instagramAvailable은 null 또는 필드 생략 가능하다.
 - 응답 ok:true를 확인한다.
 - available 후보가 남아 있으면 completed:false여도 정상이다. processedCount가 이번 1차 batch 수만큼 반영됐는지 확인한다.
 - available 후보가 하나도 없어서 이 POST로 모든 후보가 처리됐다면 completed:true를 확인하고 종료한다.
 
-2단계 — available 후보만 Instagram followers 확인:
-- followersSource가 "instagram"이고 followers가 숫자면 이미 Instagram에서 확인된 정확값이다. Instagram을 다시 열지 않고 그 숫자를 그대로 사용한다.
+2단계 — available 후보만 Instagram 프로필 확인:
+- followersSource가 "instagram"이고 followers가 숫자면 이미 Instagram에서 확인된 정확값이다. Instagram을 다시 열지 않고 그 숫자를 그대로 사용한다. 이 경우 instagramAvailable은 null로 제출해도 된다.
 - followersSource가 "search"인 숫자는 Exa/Tavily 검색 참고값일 뿐 정확값이 아니다. 자동 제외 판단에 사용하지 않는다.
 - followersSource가 "search"이거나 followers가 null인 available 후보만 https://www.instagram.com/{handle}/ 프로필을 연다.
 - Instagram 확인 대상끼리 연속으로 처리한다. FixUp 페이지로 돌아가지 않는다.
-- 목적은 현재 정확한 followers 숫자 확인뿐이다.
-- 실제 Instagram 화면에서 숫자를 확인한 경우에만 정수 followers로 기록한다.
-- 숫자를 확인하지 못하면 추정하거나 0으로 만들지 말고 followers:null로 둔다.
-- 정확한 followers가 100000 이상이면 그 숫자만 기록하고 즉시 해당 후보 followers 확인을 끝낸다.
+- 목적은 현재 프로필 존재 여부와 정확한 followers 확인뿐이다.
+
+Instagram 존재 여부 판정 — 반드시 구분:
+- 프로필이 정상적으로 열리고 해당 계정의 프로필 헤더/게시물 영역을 확인할 수 있으면 instagramAvailable:true다.
+- Instagram이 해당 계정에 대해 "페이지를 사용할 수 없습니다", "Sorry, this page isn't available", 존재하지 않는 계정에 해당하는 명확한 오류 화면을 보여주면 instagramAvailable:false다. 이 경우 followers:null로 두고 즉시 해당 후보 확인을 끝낸다.
+- 로그인 요구, 일시적 로딩 실패, 도구 timeout, Instagram 자체 오류 등으로 계정 존재 여부를 신뢰 있게 판정할 수 없으면 instagramAvailable:null이다. 이런 경우를 계정 없음으로 추정하지 않는다.
+- instagramAvailable:false 후보는 BIO/Reels/게시물/DM 등 추가 조사를 하지 않는다.
+
+followers 규칙:
+- instagramAvailable:true인 경우 실제 Instagram 화면에서 숫자를 확인한 경우에만 정수 followers로 기록한다.
+- 프로필은 정상적으로 열렸지만 followers 숫자를 확인하지 못하면 instagramAvailable:true, followers:null로 둔다.
+- 계정 존재 여부도 판정하지 못했으면 instagramAvailable:null, followers:null로 둔다.
+- 정확한 followers가 100000 이상이면 그 숫자만 기록하고 즉시 해당 후보 확인을 끝낸다.
 - followers 100000 이상/미만 모두 BIO, Reels, 게시물, DM, 카테고리 분석 등 추가 조사를 하지 않는다.
 
 2차 batch 저장 — available 후보:
 - available 후보 전체 결과를 http://localhost:3000/api/duplicate/results 로 한 번에 POST한다.
 - followersSource=instagram으로 기존 정확값이 있던 후보도 이 batch에 포함한다.
-- Instagram에서 새로 확인하지 못한 후보는 followers:null로 제출한다. 서버는 기존 값/검색 참고값을 기존 로직대로 보존한다.
+- Instagram을 실제로 연 후보는 instagramAvailable을 반드시 true / false / null 중 실제 판정값으로 포함한다.
+- Instagram에서 새로 확인하지 못한 followers는 null로 제출한다. 서버는 기존 값/검색 참고값을 기존 로직대로 보존한다.
+- instagramAvailable:false이면 서버가 계정/페이지 접근 불가 후보로 제외한다.
+- instagramAvailable:true이고 정확한 followers가 100000 미만이면 중복 통과 단계로 이동할 수 있다.
+- instagramAvailable:true인데 followers:null이거나 instagramAvailable:null이면 중복 통과로 보내지 않고 기존 추천 후보/검증 필요 단계에 남긴다.
 - 응답 ok:true와 completed:true를 반드시 확인한다.
-- processedCount와 totalCount가 같아야 전체 완료다.
+- processedCount와 totalCount가 같아야 전체 작업 실행은 완료다. 단, 각 후보의 실제 목적지는 응답 저장 결과에 따라 중복 통과/기존 후보 단계/제외로 달라질 수 있다.
 
 POST 안정성:
 - Windows PowerShell의 single-quoted here-string + Invoke-RestMethod 방식만 사용한다.
@@ -109,7 +123,7 @@ POST 안정성:
 
 PowerShell batch POST 형식 예시:
 $json = @'
-{"jobId":"${jobId}","category":"${category}","results":[{"handle":"id1","duplicateStatus":"duplicate","duplicateMessage":"실제 문구","followers":null},{"handle":"id2","duplicateStatus":"protected","duplicateMessage":"실제 문구","followers":null}]}
+{"jobId":"${jobId}","category":"${category}","results":[{"handle":"id1","duplicateStatus":"available","duplicateMessage":"실제 문구","followers":12345,"instagramAvailable":true},{"handle":"id2","duplicateStatus":"available","duplicateMessage":"실제 문구","followers":null,"instagramAvailable":false}]}
 '@
 $response = Invoke-RestMethod -Uri 'http://localhost:3000/api/duplicate/results' -Method POST -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 if ($response.ok -ne $true) { throw 'POST_FAILED' }
@@ -125,13 +139,14 @@ $response | ConvertTo-Json -Depth 5
 - "등록하기 / 登録する" 클릭
 - duplicate/protected/unknown 후보의 Instagram 열기
 - followersSource="instagram"인 후보의 Instagram 재확인
-- 팔로워 외 Instagram BIO/Reels/게시물/DM 추가 조사
+- 팔로워/프로필 존재 여부 외 Instagram BIO/Reels/게시물/DM 추가 조사
 - 검색 참고 followers만으로 100000 이상 제외 판정
+- 페이지 로딩 실패를 계정 없음으로 추정
 - 결과/숫자 추정
 
 안정성 원칙:
 - 1차 batch POST가 성공한 뒤 Instagram 단계에서 문제가 생겨도 duplicate/protected/unknown 결과는 Scout에 보존된다.
-- available 후보는 Instagram followers 단계가 끝나기 전에는 processed 처리하지 않는다.
+- available 후보는 Instagram 확인 단계가 끝나기 전에는 processed 처리하지 않는다.
 - Instagram 단계 또는 2차 POST가 실패하면 이미 성공한 1차 결과를 다시 제출하거나 재검사하지 않는다.
-- 마지막 응답 completed:true를 확인하지 못하면 전체 완료라고 말하지 않는다.`;
+- 마지막 응답 completed:true를 확인하지 못하면 전체 실행 완료라고 말하지 않는다.`;
 }
