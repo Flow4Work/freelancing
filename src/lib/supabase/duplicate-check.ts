@@ -7,6 +7,7 @@ export type DuplicateCheckResult = {
   duplicateStatus: Exclude<DuplicateCheckStatus, "not_checked">;
   duplicateMessage: string | null;
   followers?: number | null;
+  instagramAvailable?: boolean | null;
 };
 
 export async function applyDuplicateCheckResults(category: SearchCategory, results: DuplicateCheckResult[]) {
@@ -54,23 +55,38 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
       patch.verification_status = "rejected";
       patch.verification_note = result.duplicateStatus === "duplicate" ? "FixUp 중복" : "보호 목록";
     } else if (result.duplicateStatus === "available") {
-      const currentFollowers = existingFollowers.get(result.handle) ?? null;
-      const currentSource = existingFollowerSources.get(result.handle) ?? null;
-      const submittedFollowers = normalizeSubmittedFollowers(result.followers);
-
-      let exactFollowers: number | null = null;
-      if (submittedFollowers !== null) {
-        exactFollowers = submittedFollowers;
-        patch.followers = submittedFollowers;
-        patch.followers_source = "instagram";
-      } else if (currentFollowers !== null && currentSource === "instagram") {
-        exactFollowers = currentFollowers;
-      }
-
-      if (exactFollowers !== null && exactFollowers >= 100_000) {
+      if (result.instagramAvailable === false) {
+        patch.account_availability = "unavailable";
         patch.discovery_status = "hard_reject";
         patch.verification_status = "rejected";
-        patch.verification_note = `팔로워 초과 제외 · 팔로워 100,000 이상 (${exactFollowers.toLocaleString()}명)`;
+        patch.verification_note = "FixUp 등록 가능 · Instagram 계정/페이지 접근 불가";
+      } else {
+        if (result.instagramAvailable === true) {
+          patch.account_availability = "active";
+        }
+
+        const currentFollowers = existingFollowers.get(result.handle) ?? null;
+        const currentSource = existingFollowerSources.get(result.handle) ?? null;
+        const submittedFollowers = normalizeSubmittedFollowers(result.followers);
+
+        let exactFollowers: number | null = null;
+        if (submittedFollowers !== null) {
+          exactFollowers = submittedFollowers;
+          patch.followers = submittedFollowers;
+          patch.followers_source = "instagram";
+        } else if (currentFollowers !== null && currentSource === "instagram") {
+          exactFollowers = currentFollowers;
+        }
+
+        if (exactFollowers !== null && exactFollowers >= 100_000) {
+          patch.discovery_status = "hard_reject";
+          patch.verification_status = "rejected";
+          patch.verification_note = `팔로워 초과 제외 · 팔로워 100,000 이상 (${exactFollowers.toLocaleString()}명)`;
+        } else if (result.instagramAvailable === true && exactFollowers === null) {
+          patch.verification_note = "FixUp 등록 가능 · Instagram 계정 확인 · 팔로워 확인 불가";
+        } else if (result.instagramAvailable === null && exactFollowers === null) {
+          patch.verification_note = "FixUp 등록 가능 · Instagram 상태/팔로워 확인 불가";
+        }
       }
     }
 
