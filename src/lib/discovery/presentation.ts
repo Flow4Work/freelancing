@@ -43,8 +43,13 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     const sourceState = getSearchStageViewState(candidate);
     if (sourceState === "unmapped") return "unmapped";
 
-    // FixUp 등록 가능 판정이 끝났으면 중복 통과 단계로 이동한다.
-    // 중복 확인 중 followers를 못 읽었더라도 최종 검증에서 다시 확인할 수 있으므로 탭 이동을 막지 않는다.
+    // FixUp 등록 가능 뒤 Instagram 프로필에서 정확한 followers까지 확인된 후보만 중복 통과로 보낸다.
+    // 계정/페이지가 없으면 저장 단계에서 rejected 처리되고, Instagram 상태나 followers를 확인하지 못한 후보는 원래 후보 탭에 남는다.
+    if (candidate.followers === null || candidate.followersSource !== "instagram") {
+      return sourceState;
+    }
+
+    // 중복 통과 후 최종 검증이 끝나지 않았거나 필수값이 부족하면 중복 통과에 남겨 재검증한다.
     if (candidate.verificationStatus === "needs_instagram" || candidate.verificationStatus === "insufficient") {
       return "duplicate_passed";
     }
