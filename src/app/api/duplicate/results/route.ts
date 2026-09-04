@@ -10,6 +10,7 @@ const resultSchema = z.object({
   duplicateStatus: z.enum(["available", "duplicate", "protected", "unknown"]),
   duplicateMessage: z.string().max(500).nullable(),
   followers: z.number().int().nonnegative().nullable().optional(),
+  instagramAvailable: z.boolean().nullable().optional(),
 });
 
 const bodySchema = z.object({
