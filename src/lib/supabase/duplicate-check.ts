@@ -1,5 +1,6 @@
 import type { DuplicateCheckStatus, FollowerSource, SearchCategory } from "@/lib/discovery/types";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
+import { getFollowerPolicyRejection, MAX_TARGET_FOLLOWERS_EXCLUSIVE, MIN_TARGET_FOLLOWERS } from "@/lib/verification/policy";
 import { getSupabaseAdmin } from "./admin";
 
 export type DuplicateCheckResult = {
@@ -78,10 +79,15 @@ export async function applyDuplicateCheckResults(category: SearchCategory, resul
           exactFollowers = currentFollowers;
         }
 
-        if (exactFollowers !== null && exactFollowers >= 100_000) {
+        const followerRejection = getFollowerPolicyRejection(exactFollowers);
+        if (followerRejection === "under_min") {
           patch.discovery_status = "hard_reject";
           patch.verification_status = "rejected";
-          patch.verification_note = `팔로워 초과 제외 · 팔로워 100,000 이상 (${exactFollowers.toLocaleString()}명)`;
+          patch.verification_note = `팔로워 미달 제외 · 팔로워 ${MIN_TARGET_FOLLOWERS.toLocaleString()} 미만 (${exactFollowers!.toLocaleString()}명)`;
+        } else if (followerRejection === "over_max") {
+          patch.discovery_status = "hard_reject";
+          patch.verification_status = "rejected";
+          patch.verification_note = `팔로워 초과 제외 · 팔로워 ${MAX_TARGET_FOLLOWERS_EXCLUSIVE.toLocaleString()} 이상 (${exactFollowers!.toLocaleString()}명)`;
         } else if (result.instagramAvailable === true && exactFollowers === null) {
           patch.verification_note = "FixUp 등록 가능 · Instagram 계정 확인 · 팔로워 확인 불가";
         } else if (result.instagramAvailable === null && exactFollowers === null) {
