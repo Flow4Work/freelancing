@@ -1,4 +1,5 @@
 import { FIXUP_DUPLICATE_CHECK_URL } from "@/lib/automation/config";
+import { MAX_TARGET_FOLLOWERS_EXCLUSIVE, MIN_TARGET_FOLLOWERS } from "@/lib/verification/policy";
 import type { DiscoveryCandidate, SearchCategory } from "./types";
 
 export function buildDuplicateCheckPrompt(candidates: DiscoveryCandidate[], category: SearchCategory, jobId: string) {
@@ -98,8 +99,8 @@ followers 규칙:
 - instagramAvailable:true인 경우 실제 Instagram 화면에서 숫자를 확인한 경우에만 정수 followers로 기록한다.
 - 프로필은 정상적으로 열렸지만 followers 숫자를 확인하지 못하면 instagramAvailable:true, followers:null로 둔다.
 - 계정 존재 여부도 판정하지 못했으면 instagramAvailable:null, followers:null로 둔다.
-- 정확한 followers가 100000 이상이면 그 숫자만 기록하고 즉시 해당 후보 확인을 끝낸다.
-- followers 100000 이상/미만 모두 BIO, Reels, 게시물, DM, 카테고리 분석 등 추가 조사를 하지 않는다.
+- 정확한 followers가 ${MIN_TARGET_FOLLOWERS} 미만 또는 ${MAX_TARGET_FOLLOWERS_EXCLUSIVE} 이상이면 그 숫자만 기록하고 즉시 해당 후보 확인을 끝낸다.
+- 정확한 followers가 확인된 경우 BIO, Reels, 게시물, DM, 카테고리 분석 등 추가 조사를 하지 않는다. 이 단계의 목적은 존재 여부와 followers 확인뿐이다.
 
 2차 batch 저장 — available 후보:
 - available 후보 전체 결과를 http://localhost:3000/api/duplicate/results 로 한 번에 POST한다.
@@ -107,7 +108,8 @@ followers 규칙:
 - Instagram을 실제로 연 후보는 instagramAvailable을 반드시 true / false / null 중 실제 판정값으로 포함한다.
 - Instagram에서 새로 확인하지 못한 followers는 null로 제출한다. 서버는 기존 값/검색 참고값을 기존 로직대로 보존한다.
 - instagramAvailable:false이면 서버가 계정/페이지 접근 불가 후보로 제외한다.
-- instagramAvailable:true이고 정확한 followers가 100000 미만이면 중복 통과 단계로 이동할 수 있다.
+- 정확한 followers가 ${MIN_TARGET_FOLLOWERS} 미만 또는 ${MAX_TARGET_FOLLOWERS_EXCLUSIVE} 이상이면 서버가 팔로워 기준 미달/초과로 제외한다.
+- instagramAvailable:true이고 정확한 followers가 ${MIN_TARGET_FOLLOWERS} 이상 ${MAX_TARGET_FOLLOWERS_EXCLUSIVE} 미만이면 중복 통과 단계로 이동할 수 있다.
 - instagramAvailable:true인데 followers:null이거나 instagramAvailable:null이면 중복 통과로 보내지 않고 기존 추천 후보/검증 필요 단계에 남긴다.
 - 응답 ok:true와 completed:true를 반드시 확인한다.
 - processedCount와 totalCount가 같아야 전체 작업 실행은 완료다. 단, 각 후보의 실제 목적지는 응답 저장 결과에 따라 중복 통과/기존 후보 단계/제외로 달라질 수 있다.
@@ -140,7 +142,7 @@ $response | ConvertTo-Json -Depth 5
 - duplicate/protected/unknown 후보의 Instagram 열기
 - followersSource="instagram"인 후보의 Instagram 재확인
 - 팔로워/프로필 존재 여부 외 Instagram BIO/Reels/게시물/DM 추가 조사
-- 검색 참고 followers만으로 100000 이상 제외 판정
+- 검색 참고 followers만으로 ${MIN_TARGET_FOLLOWERS} 미만/${MAX_TARGET_FOLLOWERS_EXCLUSIVE} 이상 제외 판정
 - 페이지 로딩 실패를 계정 없음으로 추정
 - 결과/숫자 추정
 
