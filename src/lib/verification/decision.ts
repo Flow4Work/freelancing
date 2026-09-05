@@ -1,4 +1,5 @@
 import type { DuplicateCheckStatus, SearchCategory } from "@/lib/discovery/types";
+import { getFollowerPolicyRejection, MAX_TARGET_FOLLOWERS_EXCLUSIVE, MIN_TARGET_FOLLOWERS } from "./policy";
 import type { ReelMetrics } from "./metrics";
 
 export type FinalPriority = "1순위" | "2순위" | "3순위" | "제외";
@@ -42,8 +43,21 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
   if (input.isPersonalCreator === false) {
     return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "개인 크리에이터가 아닌 계정" };
   }
-  if (input.followers !== null && input.followers >= 100000) {
-    return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "팔로워 100,000 이상" };
+
+  const followerRejection = getFollowerPolicyRejection(input.followers);
+  if (followerRejection === "under_min") {
+    return {
+      discoveryStatus: "hard_reject",
+      verificationStatus: "rejected",
+      reason: `팔로워 ${MIN_TARGET_FOLLOWERS.toLocaleString()} 미만`,
+    };
+  }
+  if (followerRejection === "over_max") {
+    return {
+      discoveryStatus: "hard_reject",
+      verificationStatus: "rejected",
+      reason: `팔로워 ${MAX_TARGET_FOLLOWERS_EXCLUSIVE.toLocaleString()} 이상`,
+    };
   }
   if (input.japaneseTarget === false) {
     return { discoveryStatus: "hard_reject", verificationStatus: "rejected", reason: "일본 타깃 아님" };
@@ -84,8 +98,8 @@ export function decideVerification(input: VerificationDecisionInput): Verificati
   });
 
   if (priority === "제외") {
-    const reason = followers < 1000
-      ? "제외 · 팔로워 1K 미만"
+    const reason = followers < MIN_TARGET_FOLLOWERS
+      ? `제외 · 팔로워 ${MIN_TARGET_FOLLOWERS.toLocaleString()} 미만`
       : "제외 · 최근 Reels 평균 1K 미만";
     return { discoveryStatus: "hard_reject", verificationStatus: "verified", reason };
   }
@@ -101,34 +115,25 @@ export function classifyFinalPriority(input: {
 }): FinalPriority {
   const { category, followers, reelAverage, bio } = input;
 
-  if (followers < 1000 || reelAverage < 1000) return "제외";
+  if (followers < MIN_TARGET_FOLLOWERS || reelAverage < 1000) return "제외";
 
-  const firstPriority = (
-    followers >= 3000
-    && followers <= 7000
-    && reelAverage >= 3000
-  ) || (
-    category === "beauty"
+  const firstPriority = category === "beauty"
     && hasExplicitFemaleSignal(bio)
     && followers >= 10000
     && followers <= 20000
-    && reelAverage >= 10000
-  );
+    && reelAverage >= 10000;
   if (firstPriority) return "1순위";
 
-  if (followers >= 2000 && followers <= 10000 && reelAverage >= 2000) {
+  // 기존 2순위 규칙 중 현재 10K 하한과 겹치는 경계값만 보존한다.
+  if (followers === MIN_TARGET_FOLLOWERS && reelAverage >= 2000) {
     return "2순위";
   }
 
-  if (
-    (followers >= 1000 && followers <= 3000 && reelAverage >= 1000)
-    || (followers >= 10000 && reelAverage >= 1000 && reelAverage < 10000)
-    || (category === "food" && followers >= 3000 && followers <= 7000 && reelAverage >= 1000 && reelAverage < 3000)
-  ) {
+  if (followers >= MIN_TARGET_FOLLOWERS && reelAverage >= 1000 && reelAverage < 10000) {
     return "3순위";
   }
 
-  // 4단계 분류가 빠지지 않도록, 제외 기준은 아니지만 1/2순위 조건에도 들지 않는 검증 완료 후보는 3순위로 둔다.
+  // 제외 기준은 아니지만 1/2순위 조건에도 들지 않는 검증 완료 후보는 기존과 동일하게 3순위로 둔다.
   return "3순위";
 }
 
