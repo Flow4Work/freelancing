@@ -1,3 +1,4 @@
+import { MAX_TARGET_FOLLOWERS_EXCLUSIVE, MIN_TARGET_FOLLOWERS } from "@/lib/verification/policy";
 import type { DiscoveryCandidate, SearchCategory } from "./types";
 
 export function buildOpenCodeVerificationPrompt(candidates: DiscoveryCandidate[], category: SearchCategory, jobId: string) {
@@ -63,7 +64,8 @@ $response | ConvertTo-Json -Depth 5
 - 비공개 계정
 - 개인 크리에이터가 아님
 - 공식 기업/브랜드/기관 계정
-- followers >= 100000
+- followers < ${MIN_TARGET_FOLLOWERS}
+- followers >= ${MAX_TARGET_FOLLOWERS_EXCLUSIVE}
 - 일본 타깃이 아님
 - 한국 접점이 명백히 없음
 - ${categoryLabel} 카테고리와 명백히 관련 없음
@@ -126,7 +128,7 @@ Reels 기본 방식에서 금지:
 - handle은 @ 없이 정확히 일치한다.
 - duplicateStatus / duplicateMessage는 아래 기존 값과 완전히 동일하다.
 - 숫자를 확인하지 못했으면 null이다.
-- followers >= 100000 또는 다른 1차 hard reject가 확정된 후보는 /reels/ 방문 0회이고 reels:[]인지 확인한다.
+- followers < ${MIN_TARGET_FOLLOWERS}, followers >= ${MAX_TARGET_FOLLOWERS_EXCLUSIVE}, 또는 다른 1차 hard reject가 확정된 후보는 /reels/ 방문 0회이고 reels:[]인지 확인한다.
 - 1차 조건을 통과한 공개 후보만 https://www.instagram.com/{handle}/reels/ 로 진입했는지 확인한다.
 - Reel 개별 페이지를 열지 않았는지 확인한다.
 - 수집한 Reel은 고정 Reel 제외 후 최대 8개인지 확인한다.
