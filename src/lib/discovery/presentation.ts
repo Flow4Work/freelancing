@@ -1,3 +1,4 @@
+import { getFollowerPolicyRejection } from "@/lib/verification/policy";
 import { classifySearchStage } from "./classification";
 import type { DiscoveryCandidate } from "./types";
 
@@ -47,6 +48,11 @@ export function getCandidateViewState(candidate: DiscoveryCandidate): CandidateV
     // 계정/페이지가 없으면 저장 단계에서 rejected 처리되고, Instagram 상태나 followers를 확인하지 못한 후보는 원래 후보 탭에 남는다.
     if (candidate.followers === null || candidate.followersSource !== "instagram") {
       return sourceState;
+    }
+
+    // 과거 데이터가 남아 있어도 현재 타깃 팔로워 범위를 벗어난 정확값은 활성 탭으로 다시 노출하지 않는다.
+    if (getFollowerPolicyRejection(candidate.followers)) {
+      return "unmapped";
     }
 
     // 중복 통과 후 최종 검증이 끝나지 않았거나 필수값이 부족하면 중복 통과에 남겨 재검증한다.
