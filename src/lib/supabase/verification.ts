@@ -34,7 +34,7 @@ export async function applyInstagramVerificationResults(category: SearchCategory
 
   const handles = [...new Set(normalizedResults.map((result) => result.handle))];
   const [{ data: candidates, error: candidateError }, { data: contacted, error: contactedError }] = await Promise.all([
-    supabase.from("creator_candidates").select("normalized_handle, followers, discovery_status").eq("category", category).in("normalized_handle", handles),
+    supabase.from("creator_candidates").select("normalized_handle, followers, followers_source, discovery_status").eq("category", category).in("normalized_handle", handles),
     supabase.from("creator_contacted_handles").select("normalized_handle").in("normalized_handle", handles),
   ]);
 
@@ -42,9 +42,11 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   if (contactedError) throw new Error(`컨택 이력 확인 실패: ${contactedError.message}`);
 
   const allowed = new Set((candidates ?? []).map((row) => String(row.normalized_handle)));
-  const existingFollowers = new Map<string, number | null>((candidates ?? []).map((row): [string, number | null] => [
+  const exactExistingFollowers = new Map<string, number | null>((candidates ?? []).map((row): [string, number | null] => [
     String(row.normalized_handle),
-    typeof row.followers === "number" && Number.isFinite(row.followers) ? row.followers : null,
+    row.followers_source === "instagram" && typeof row.followers === "number" && Number.isFinite(row.followers)
+      ? row.followers
+      : null,
   ]));
   const existingDiscoveryStatus = new Map<string, string>((candidates ?? []).map((row): [string, string] => [
     String(row.normalized_handle),
@@ -56,7 +58,9 @@ export async function applyInstagramVerificationResults(category: SearchCategory
   for (const result of normalizedResults) {
     if (!allowed.has(result.handle) || blocked.has(result.handle)) continue;
 
-    const followers = result.followers ?? existingFollowers.get(result.handle) ?? null;
+    // 최종 검증에서 followers를 읽지 못한 경우 search 참고값을 정확값처럼 재사용하지 않는다.
+    // 이전에 Instagram에서 직접 확인된 값만 안전한 fallback으로 허용한다.
+    const followers = result.followers ?? exactExistingFollowers.get(result.handle) ?? null;
     const metrics = computeReelMetrics(result.reels);
     const decision = decideVerification({
       category,
@@ -102,40 +106,46 @@ export async function applyInstagramVerificationResults(category: SearchCategory
       ? previousDiscoveryStatus
       : decision.discoveryStatus;
 
+    const patch: Record<string, unknown> = {
+      duplicate_check_status: result.duplicateStatus,
+      duplicate_check_message: result.duplicateMessage,
+      duplicate_checked_at: now,
+      account_availability: result.exists === true ? "active" : result.exists === false ? "unavailable" : "unknown",
+      account_type: result.isPersonalCreator === true ? "creator" : result.isPersonalCreator === false ? "business" : "unknown",
+      korea_affinity: result.koreaConnection === true ? "yes" : result.koreaConnection === false ? "none" : "unknown",
+      content_fit: result.categoryRelevant === true ? category : "other",
+      eligibility: decision.discoveryStatus === "qualified" ? "possible" : decision.discoveryStatus === "hard_reject" || decision.discoveryStatus === "private" ? "fail" : "unknown",
+      activity: result.recentActivity === true ? "active" : "unknown",
+      bio: result.bio,
+      reel_average: metrics.average,
+      reel_median: metrics.median,
+      reel_sample_size: metrics.sampleSize,
+      reel_checked_count: metrics.checkedCount,
+      reel_total_considered: metrics.totalConsidered,
+      reel_metrics_status: metrics.status,
+      reel_views: metrics.snapshots,
+      last_activity_at: normalizeIso(result.lastActivityAt),
+      verification_note: compactNote,
+      is_private: result.isPrivate,
+      is_personal_creator: result.isPersonalCreator,
+      japanese_target: result.japaneseTarget,
+      korea_connection: result.koreaConnection,
+      category_relevant: result.categoryRelevant,
+      recent_activity: result.recentActivity,
+      verification_status: decision.verificationStatus,
+      discovery_status: discoveryStatus,
+      verified_at: now,
+      updated_at: now,
+    };
+
+    if (result.followers !== null) {
+      patch.followers = result.followers;
+      patch.followers_source = "instagram";
+    }
+
     const { error } = await supabase
       .from("creator_candidates")
-      .update({
-        duplicate_check_status: result.duplicateStatus,
-        duplicate_check_message: result.duplicateMessage,
-        duplicate_checked_at: now,
-        account_availability: result.exists === true ? "active" : result.exists === false ? "unavailable" : "unknown",
-        account_type: result.isPersonalCreator === true ? "creator" : result.isPersonalCreator === false ? "business" : "unknown",
-        korea_affinity: result.koreaConnection === true ? "yes" : result.koreaConnection === false ? "none" : "unknown",
-        content_fit: result.categoryRelevant === true ? category : "other",
-        eligibility: decision.discoveryStatus === "qualified" ? "possible" : decision.discoveryStatus === "hard_reject" || decision.discoveryStatus === "private" ? "fail" : "unknown",
-        activity: result.recentActivity === true ? "active" : "unknown",
-        bio: result.bio,
-        followers,
-        reel_average: metrics.average,
-        reel_median: metrics.median,
-        reel_sample_size: metrics.sampleSize,
-        reel_checked_count: metrics.checkedCount,
-        reel_total_considered: metrics.totalConsidered,
-        reel_metrics_status: metrics.status,
-        reel_views: metrics.snapshots,
-        last_activity_at: normalizeIso(result.lastActivityAt),
-        verification_note: compactNote,
-        is_private: result.isPrivate,
-        is_personal_creator: result.isPersonalCreator,
-        japanese_target: result.japaneseTarget,
-        korea_connection: result.koreaConnection,
-        category_relevant: result.categoryRelevant,
-        recent_activity: result.recentActivity,
-        verification_status: decision.verificationStatus,
-        discovery_status: discoveryStatus,
-        verified_at: now,
-        updated_at: now,
-      })
+      .update(patch)
       .eq("normalized_handle", result.handle)
       .eq("category", category);
 
