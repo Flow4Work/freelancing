@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 $PrimaryModel = if ([string]::IsNullOrWhiteSpace($env:FIXUP_OPENCODE_PRIMARY_MODEL)) {
     'opencode/muse-spark-1.2-contributor-free'
@@ -186,8 +188,8 @@ if ($null -ne $Circuit) {
         exit 173
     }
 
-    [Console]::Error.WriteLine("Provider unavailable: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
-    exit 175
+    [Console]::Error.WriteLine("Local execution failure: cached primary circuit open until $($Circuit.expiresAt). reason=$($Circuit.reason)")
+    exit 180
 }
 
 $Id = [Guid]::NewGuid().ToString('N')
@@ -209,10 +211,11 @@ try {
         -PassThru
 }
 catch {
-    [Console]::Error.WriteLine("Provider unavailable: primary OpenCode start failed. $($_.Exception.Message)")
+    [Console]::Error.WriteLine("Local execution failure: primary OpenCode start failed. $($_.Exception.Message)")
     exit 1
 }
 
+$null = $Child.Handle
 $StartedAt = [DateTime]::UtcNow
 $StdoutOffset = 0L
 $StderrOffset = 0L
@@ -252,7 +255,7 @@ try {
         if (-not $SeenMeaningfulOutput -and ([DateTime]::UtcNow - $StartedAt).TotalSeconds -ge $InitialSilenceSeconds) {
             Set-Circuit 'initial_silence' $SilenceCooldownMinutes
             Stop-ChildTree $Child.Id
-            [Console]::Error.WriteLine("Provider unavailable: primary model produced no meaningful output for $InitialSilenceSeconds seconds; short circuit cached for $SilenceCooldownMinutes minutes.")
+            [Console]::Error.WriteLine("Local execution failure: primary model produced no meaningful output for $InitialSilenceSeconds seconds; short circuit cached for $SilenceCooldownMinutes minutes.")
             exit 1
         }
     }
@@ -280,7 +283,7 @@ try {
     exit $ExitCode
 }
 finally {
-    Remove-Item -LiteralPath $StdoutFile, $StderrFile -Force -ErrorAction SilentlyContinue
+    [Console]::Error.WriteLine("FixUp primary raw logs: $StdoutFile $StderrFile")
     Remove-Item Env:FIXUP_REAL_OPENCODE -ErrorAction SilentlyContinue
     Remove-Item Env:FIXUP_REAL_OPENCODE_ARGS -ErrorAction SilentlyContinue
 }

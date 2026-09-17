@@ -27,6 +27,8 @@ const PROFILE_BUSINESS_PATTERNS = [
   /ビジネスサービス/i,
   /(?:ご予約|予約受付).{0,12}(?:こちら|DM|LINE|リンク)/i,
   /(?:OPEN|営業時間)\s*[:：]?\s*\d{1,2}/i,
+  /(?:サロン|美容室).{0,40}(?:代表|オーナー|経営|運営|予約受付|ご予約|採用|求人)/i,
+  /(?:代表|オーナー|経営|運営).{0,40}(?:サロン|美容室)/i,
   /お店です/i,
   /店舗(?:情報|一覧)/i,
 ];
@@ -58,7 +60,7 @@ const JAPAN_IDENTITY_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const KOREA_PATTERNS: Array<[RegExp, string]> = [
-  [/韓国在住|在韓/i, "한국 거주"],
+  [/韓国在住|在韓|ソウル(?:在住|暮らし)|韓国(?:生活|暮らし|留学|ワーホリ)/i, "한국 거주/생활"],
   [/渡韓|訪韓/i, "방한"],
   [/韓国美容|美容渡韓|韓国皮膚科|韓国クリニック|韓国美容医療/i, "한국 미용"],
   [/韓国コスメ|K-?Beauty|オリーブヤング|韓国スキンケア/i, "K뷰티"],
@@ -128,7 +130,16 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
 
   const handleBusiness = HANDLE_BUSINESS_PATTERNS.some((pattern) => pattern.test(input.handle));
   const doctor = Boolean(profileText) && DOCTOR_PATTERNS.some((pattern) => pattern.test(profileText));
-  const profileBusiness = Boolean(profileText) && PROFILE_BUSINESS_PATTERNS.some((pattern) => pattern.test(profileText));
+  const ownerMention = /(?:サロン|美容室).{0,40}(?:代表|オーナー|経営|運営)|(?:代表|オーナー|経営|運営).{0,40}(?:サロン|美容室)/i;
+  const personalLifestyle = /(?:私の|自分の|日常|暮らし|ライフスタイル|ファッション|コーデ|ママ|旅行|VLOG)/i;
+  const personalBusinessCreator = personalLifestyle.test(profileText)
+    && PERSONAL_CREATOR_PATTERNS.some((pattern) => pattern.test(profileText))
+    && targetSignals.length > 0 && hasStrongKoreaAccess(combined) && hasActualKBeautyContent(combined);
+  const profileBusiness = Boolean(profileText) && PROFILE_BUSINESS_PATTERNS.some((pattern) => {
+    if (personalBusinessCreator && ownerMention.test(profileText)
+      && (pattern.source.startsWith("(?:サロン|美容室)") || pattern.source.startsWith("(?:代表|オーナー"))) return false;
+    return pattern.test(profileText);
+  });
   const aggregatorLike = Boolean(profileText) && PROFILE_AGGREGATOR_PATTERNS.some((pattern) => pattern.test(profileText));
   const personalLike = PERSONAL_CREATOR_PATTERNS.some((pattern) => pattern.test(combined));
 
@@ -144,7 +155,7 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
       ? "creator"
       : "unknown";
 
-  const koreaAffinity: KoreaAffinity = STRONG_KOREA_PATTERNS.some((pattern) => pattern.test(combined))
+  const koreaAffinity: KoreaAffinity = hasStrongKoreaAccess(combined) || STRONG_KOREA_PATTERNS.some((pattern) => pattern.test(combined))
     ? "strong"
     : koreaSignals.length > 0
       ? "yes"
@@ -172,6 +183,7 @@ export function assessCandidate(input: AssessInput): QualityAssessment {
   const eligibility: Eligibility = accountType === "business"
     ? "fail"
     : accountType === "creator"
+      && targetSignals.length > 0
       && (koreaAffinity === "strong" || koreaAffinity === "yes")
       && contentFit === input.category
       ? "possible"
@@ -224,4 +236,25 @@ function hasEnoughJapaneseScript(text: string) {
 
 function clean(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+export function hasStrongKoreaAccess(text: string) {
+  return /韓国在住|在韓|ソウル(?:在住|暮らし)|韓国(?:生活|暮らし|留学|ワーホリ)|韓国.{0,12}(?:留学中|ワーキングホリデー)|毎月.{0,10}(?:渡韓|韓国)|月\s*\d+.{0,10}(?:渡韓|韓国)|(?:頻繁に|何度も|繰り返し)渡韓|渡韓(?:歴|回数)|渡韓\s*\d+\s*回|한국\s*거주|반복\s*방한|매월\s*방한/i.test(text);
+}
+
+export function hasActualKBeautyContent(text: string) {
+  const topic = /韓国(?:美容|コスメ|化粧品|スキンケア|皮膚科|クリニック|肌管理)|美容渡韓|オリーブヤング|K-?Beauty|한국\s*(?:화장품|피부관리|뷰티)/i;
+  const experience = /レビュー|体験|愛用|使って|使い切り|購入品|購入した|受けた|受けて|施術レポ|経過|후기|리뷰|사용|체험/i;
+  // A category label alone is insufficient; require an actual experience in the same excerpt.
+  return text.split(/[\n。.!?！？]/).some((excerpt) => topic.test(excerpt) && experience.test(excerpt));
+}
+
+export function hasStrongSmallCreatorEvidence(
+  candidate: Pick<QualityAssessment, "accountType" | "targetSignals" | "koreaSignals" | "contentFit">,
+  text: string,
+) {
+  return candidate.accountType === "creator"
+    && candidate.targetSignals.length > 0 && candidate.koreaSignals.length > 0
+    && candidate.contentFit === "beauty"
+    && hasStrongKoreaAccess(text) && hasActualKBeautyContent(text);
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
+import { getOpenCodeFailureTrace } from "@/lib/automation/opencode-runtime";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
       for (const candidate of candidates ?? []) candidateMap.set(String(candidate.normalized_handle), candidate as Record<string, unknown>);
     }
 
-    const items = (jobs ?? []).map((job) => {
+    const items = await Promise.all((jobs ?? []).map(async (job) => {
       const handles = normalizeHandles(job.handles);
       const processedHandles = normalizeHandles(job.processed_handles);
       const processedSet = new Set(processedHandles);
@@ -76,11 +77,11 @@ export async function GET(request: Request) {
         createdAt: String(job.created_at),
         completedAt: job.completed_at ? String(job.completed_at) : null,
         failedAt: job.failed_at ? String(job.failed_at) : null,
-        failureMessage: job.failure_message ? String(job.failure_message) : null,
+        failureMessage: status === "failed" ? (job.failure_message ? String(job.failure_message) : (await getOpenCodeFailureTrace(String(job.id)))) : (job.failure_message ? String(job.failure_message) : null),
         groups,
         exactSnapshot: Boolean(snapshot),
       };
-    });
+    }));
 
     return NextResponse.json({ ok: true, items });
   } catch (error) {

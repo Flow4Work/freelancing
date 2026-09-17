@@ -1,6 +1,8 @@
 import type { SearchCategory } from "@/lib/discovery/types";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
 import { getSupabaseAdmin } from "./admin";
+import { selectLatestDmContactByHandle } from "@/lib/dm/contact-history";
+import { formatApprovedJapaneseDm } from "@/lib/dm/text-format";
 
 export type DmOpenCodeStatus = "pending" | "success" | "failed";
 
@@ -9,7 +11,6 @@ export type DmContact = {
   handle: string;
   category: SearchCategory;
   japaneseText: string;
-  koreanText: string;
   generatedAt: string;
   approvedAt: string;
   approvalStatus: "approved";
@@ -17,13 +18,13 @@ export type DmContact = {
   openCodeCompletedAt: string | null;
   openCodeError: string | null;
   sentAt: string | null;
+  createdAt: string;
 };
 
 type ApprovedDmContactInput = {
   category: SearchCategory;
   handle: string;
   japaneseText: string;
-  koreanText: string;
 };
 
 export async function createApprovedDmContacts(inputs: ApprovedDmContactInput[]) {
@@ -39,11 +40,9 @@ export async function createApprovedDmContacts(inputs: ApprovedDmContactInput[])
     if (input.handle !== handle || !isValidHandle(handle) || input.handle.includes("\\")) {
       throw new Error(`Instagram ID가 올바르지 않습니다: ${JSON.stringify(input.handle)}`);
     }
-    const japaneseText = input.japaneseText;
-    const koreanText = input.koreanText.trim();
+    const japaneseText = formatApprovedJapaneseDm(input.japaneseText);
     if (!japaneseText.trim()) throw new Error(`@${handle} 승인 일본어 DM이 비어 있습니다.`);
-    if (!koreanText) throw new Error(`@${handle} 승인 한국어 DM 해석이 비어 있습니다.`);
-    return { ...input, handle, japaneseText, koreanText };
+    return { ...input, handle, japaneseText };
   });
 
   const duplicateHandles = normalizedInputs
@@ -88,7 +87,7 @@ export async function createApprovedDmContacts(inputs: ApprovedDmContactInput[])
     normalized_handle: input.handle,
     category,
     japanese_text: input.japaneseText,
-    korean_text: input.koreanText,
+    korean_text: "",
     generated_at: String(candidateByHandle.get(input.handle)?.dm_generated_at),
     approved_at: approvedAt,
     approval_status: "approved",
@@ -124,19 +123,14 @@ export async function listUnsentDmContacts(category: SearchCategory) {
     .select(CONTACT_COLUMNS)
     .eq("category", category)
     .order("approved_at", { ascending: false })
+    .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(1000);
 
   if (error) throw new Error(`DM 연락 이력 조회 실패: ${error.message}`);
 
-  const latestByHandle = new Map<string, DmContact>();
-  for (const row of data ?? []) {
-    const contact = mapContact(row);
-    if (!latestByHandle.has(contact.handle)) {
-      latestByHandle.set(contact.handle, contact);
-    }
-  }
-  return [...latestByHandle.values()];
+  const contacts = (data ?? []).map((row) => mapContact(row));
+  return [...selectLatestDmContactByHandle(contacts).values()];
 }
 
 export async function getDmContact(id: string) {
@@ -151,6 +145,33 @@ export async function getDmContact(id: string) {
   return mapContact(data);
 }
 
+export async function reformatApprovedDmContactsForRetry(category: SearchCategory, ids: string[]) {
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (!uniqueIds.length || uniqueIds.length !== ids.length) throw new Error("DM reformat 선택값이 올바르지 않습니다.");
+
+  const contacts = await Promise.all(uniqueIds.map((id) => getDmContact(id)));
+  const invalid = contacts.find((contact) => contact.category !== category || contact.approvalStatus !== "approved" || Boolean(contact.sentAt));
+  if (invalid) throw new Error(`@${invalid.handle} 은 현재 reformat 가능한 승인 contact가 아닙니다.`);
+
+  const supabase = requireSupabase();
+  return Promise.all(contacts.map(async (contact) => {
+    const japaneseText = formatApprovedJapaneseDm(contact.japaneseText);
+    const { data, error } = await supabase
+      .from("creator_dm_contact_history")
+      .update({
+        opencode_status: "pending",
+        opencode_completed_at: null,
+        opencode_error: null,
+      })
+      .eq("id", contact.id)
+      .eq("category", category)
+      .is("sent_at", null)
+      .select(CONTACT_COLUMNS)
+      .single();
+    if (error || !data) throw new Error(`@${contact.handle} DM reformat 저장 실패: ${error?.message ?? "저장 결과 없음"}`);
+    return { ...mapContact(data), japaneseText };
+  }));
+}
 export async function recordDmOpenCodeResult(input: {
   id: string;
   handle: string;
@@ -188,28 +209,103 @@ export async function recordDmOpenCodeResult(input: {
   return mapContact(data);
 }
 
-export async function markDmContactSent(id: string) {
-  const current = await getDmContact(id);
-  if (current.sentAt) return current;
-  if (current.openCodeStatus !== "success") {
-    throw new Error("OpenCode 입력 준비가 완료된 DM만 발송 완료로 기록할 수 있습니다.");
+export async function listPendingSentSyncContacts(category: SearchCategory) {
+  const contacts = (await listUnsentDmContacts(category))
+    .filter((contact) => contact.openCodeStatus === "success" && !contact.sentAt);
+  if (!contacts.length) return [];
+
+  const supabase = requireSupabase();
+  const { data, error } = await supabase
+    .from("creator_candidates")
+    .select("normalized_handle")
+    .eq("category", category)
+    .eq("duplicate_check_status", "available")
+    .eq("verification_status", "verified")
+    .eq("discovery_status", "qualified")
+    .in("normalized_handle", contacts.map((contact) => contact.handle));
+  if (error) throw new Error(`발송 확인 후보 상태 조회 실패: ${error.message}`);
+  const eligible = new Set((data ?? []).map((row) => String(row.normalized_handle)));
+  return contacts.filter((contact) => eligible.has(contact.handle));
+}
+
+export async function getLatestDmContactForHandle(category: SearchCategory, handleInput: string) {
+  const handle = normalizeHandle(handleInput);
+  if (handleInput !== handle || !isValidHandle(handle)) throw new Error("Invalid DM contact handle");
+  return (await listUnsentDmContacts(category)).find((contact) => contact.handle === handle) ?? null;
+}
+
+export async function returnDmContactsToFinalVerification(category: SearchCategory, ids: string[]) {
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (!uniqueIds.length || uniqueIds.length !== ids.length) throw new Error("되돌릴 DM 연락 이력 선택값이 올바르지 않습니다.");
+
+  const latest = await listUnsentDmContacts(category);
+  const latestById = new Map(latest.map((contact) => [contact.id, contact]));
+  const invalid = uniqueIds.filter((id) => {
+    const contact = latestById.get(id);
+    return !contact || contact.openCodeStatus !== "success" || Boolean(contact.sentAt);
+  });
+  if (invalid.length) throw new Error("선택한 항목 중 현재 발송 확인 대상이 아닌 계정이 있습니다.");
+
+  const selectedContacts = uniqueIds.map((id) => latestById.get(id)!);
+  const selectedHandles = selectedContacts.map((contact) => contact.handle);
+  const supabase = requireSupabase();
+  const { data: eligibleCandidates, error: candidateError } = await supabase
+    .from("creator_candidates")
+    .select("normalized_handle")
+    .eq("category", category)
+    .eq("duplicate_check_status", "available")
+    .eq("verification_status", "verified")
+    .eq("discovery_status", "qualified")
+    .in("normalized_handle", selectedHandles);
+  if (candidateError) throw new Error(`최종 검증 후보 상태 확인 실패: ${candidateError.message}`);
+  const eligibleHandles = new Set((eligibleCandidates ?? []).map((row) => String(row.normalized_handle)));
+  const ineligibleHandles = selectedHandles.filter((handle) => !eligibleHandles.has(handle));
+  if (ineligibleHandles.length) {
+    throw new Error(`현재 최종 검증 완료 후보가 아닌 계정은 되돌릴 수 없습니다: ${ineligibleHandles.map((handle) => `@${handle}`).join(", ")}`);
   }
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("creator_dm_contact_history")
+    .update({
+      opencode_status: "failed",
+      opencode_completed_at: now,
+      opencode_error: "사용자 요청: 최종 검증 후보로 되돌림",
+    })
+    .eq("category", category)
+    .in("id", uniqueIds)
+    .eq("opencode_status", "success")
+    .is("sent_at", null)
+    .select(CONTACT_COLUMNS);
+
+  if (error) throw new Error(`최종 검증 후보 되돌리기 실패: ${error.message}`);
+  if ((data ?? []).length !== uniqueIds.length) throw new Error(`최종 검증 후보 되돌리기 결과 불일치: ${(data ?? []).length}/${uniqueIds.length}`);
+  return (data ?? []).map((row) => mapContact(row));
+}
+
+export async function markDmContactSentFromSync(id: string, handleInput: string) {
+  const current = await getDmContact(id);
+  const handle = normalizeHandle(handleInput);
+  if (handleInput !== handle || !isValidHandle(handle) || current.handle !== handle) {
+    throw new Error("DM sync handle mismatch");
+  }
+  if (current.sentAt) return current;
+  if (current.openCodeStatus !== "success") throw new Error("OpenCode input success is required before sent sync");
 
   const supabase = requireSupabase();
   const { data, error } = await supabase
     .from("creator_dm_contact_history")
     .update({ sent_at: new Date().toISOString() })
     .eq("id", id)
+    .eq("normalized_handle", handle)
     .eq("opencode_status", "success")
     .is("sent_at", null)
     .select(CONTACT_COLUMNS)
     .single();
-
-  if (error || !data) throw new Error(`DM 발송 완료 저장 실패: ${error?.message ?? "저장 결과 없음"}`);
+  if (error || !data) throw new Error(`DM sent sync save failed: ${error?.message ?? "no result"}`);
   return mapContact(data);
 }
-
-const CONTACT_COLUMNS = "id, normalized_handle, category, japanese_text, korean_text, generated_at, approved_at, approval_status, opencode_status, opencode_completed_at, opencode_error, sent_at";
+const CONTACT_COLUMNS = "id, normalized_handle, category, japanese_text, generated_at, approved_at, approval_status, opencode_status, opencode_completed_at, opencode_error, sent_at, created_at";
 
 function mapContact(row: Record<string, unknown>): DmContact {
   const category = row.category === "food" ? "food" : "beauty";
@@ -218,7 +314,6 @@ function mapContact(row: Record<string, unknown>): DmContact {
     handle: String(row.normalized_handle),
     category,
     japaneseText: String(row.japanese_text ?? ""),
-    koreanText: String(row.korean_text ?? ""),
     generatedAt: String(row.generated_at),
     approvedAt: String(row.approved_at),
     approvalStatus: "approved",
@@ -226,6 +321,7 @@ function mapContact(row: Record<string, unknown>): DmContact {
     openCodeCompletedAt: nullableString(row.opencode_completed_at),
     openCodeError: nullableString(row.opencode_error),
     sentAt: nullableString(row.sent_at),
+    createdAt: String(row.created_at),
   };
 }
 

@@ -3,14 +3,13 @@ import { z } from "zod";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
 import { launchOpenCodeDmBatch } from "@/lib/automation/opencode-dm-launcher";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
-import { createApprovedDmContacts, recordDmOpenCodeResult, type DmContact } from "@/lib/supabase/dm-contacts";
+import { createApprovedDmContacts, type DmContact } from "@/lib/supabase/dm-contacts";
 
 export const runtime = "nodejs";
 
 const itemSchema = z.object({
   handle: z.string().min(1).max(30).regex(/^[A-Za-z0-9._]+$/).refine((handle) => isValidHandle(handle), "Instagram ID가 올바르지 않습니다."),
   japaneseText: z.string().min(1).max(3000),
-  koreanText: z.string().min(1).max(3000),
 });
 
 const bodySchema = z.object({
@@ -45,7 +44,6 @@ export async function POST(request: Request) {
       category: parsed.data.category,
       handle: item.handle,
       japaneseText: item.japaneseText,
-      koreanText: item.koreanText,
     })));
 
     if (contacts.length !== requestedCount) {
@@ -96,15 +94,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "DM batch 승인/OpenCode 실행 중 오류가 발생했습니다.";
     console.error("dm_batch_approve_failed", error);
-
-    if (contacts.length) {
-      await Promise.allSettled(contacts.map((contact) => recordDmOpenCodeResult({
-        id: contact.id,
-        handle: contact.handle,
-        status: "failed",
-        error: message,
-      })));
-    }
 
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }

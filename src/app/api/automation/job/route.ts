@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
+import { getOpenCodeRuntimeStatus } from "@/lib/automation/opencode-runtime";
 import { normalizeHandle } from "@/lib/discovery/instagram";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { failVerificationJob } from "@/lib/supabase/verification-jobs";
@@ -56,13 +57,19 @@ async function getVerificationJobResumeState(jobId: string) {
   const expected = new Set(handles);
   const processedHandles = normalizeHandles(data.processed_handles).filter((handle) => expected.has(handle));
 
+  const status = data.status === "completed" || data.status === "failed" ? data.status : "pending";
+  const remainingHandles = handles.filter((handle) => !processedHandles.includes(handle));
+  const runtimeStatus = await getOpenCodeRuntimeStatus(jobId, status);
+
   return {
     id: jobId,
-    status: data.status === "completed" || data.status === "failed" ? data.status : "pending",
+    status,
+    runtimeStatus,
     processedCount: processedHandles.length,
     totalCount: handles.length,
     failureMessage: data.failure_message ? String(data.failure_message) : null,
     processedHandles,
+    remainingHandles,
   };
 }
 

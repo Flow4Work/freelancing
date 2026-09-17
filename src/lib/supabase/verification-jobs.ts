@@ -1,3 +1,6 @@
+import { stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { SearchCategory } from "@/lib/discovery/types";
 import { normalizeHandle } from "@/lib/discovery/instagram";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
@@ -70,6 +73,43 @@ export async function createVerificationJob(
   const normalized = normalizeHandles(handles);
   if (!normalized.length) throw new Error("처리할 후보가 없습니다.");
 
+  const { data: pendingJobs, error: pendingError } = await supabase
+    .from("creator_verification_jobs")
+    .select("id, handles, processed_handles, created_at, job_kind")
+    .eq("category", category)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (pendingError) throw new Error(`진행 중 작업 확인 실패: ${pendingError.message}`);
+
+  const requested = new Set(normalized);
+  for (const row of pendingJobs ?? []) {
+    const createdAt = Date.parse(String(row.created_at ?? ""));
+    const activeHandles = normalizeHandles(Array.isArray(row.handles) ? row.handles.map(String) : []);
+    const processedHandles = new Set(normalizeHandles(Array.isArray(row.processed_handles) ? row.processed_handles.map(String) : []));
+    const remainingHandles = activeHandles.filter((handle) => !processedHandles.has(handle));
+    const overlap = remainingHandles.filter((handle) => requested.has(handle));
+    if (!overlap.length) continue;
+
+    const runtimeActive = await isVerificationJobRuntimeActive(String(row.id), createdAt);
+    if (!runtimeActive) {
+      const { error: staleError } = await supabase
+        .from("creator_verification_jobs")
+        .update({
+          status: "failed",
+          failed_at: new Date().toISOString(),
+          failure_message: "실행 프로세스 heartbeat가 끊긴 stale pending 작업을 자동 정리했습니다.",
+        })
+        .eq("id", String(row.id))
+        .eq("status", "pending");
+      if (staleError) throw new Error(`중단된 작업 정리 실패: ${staleError.message}`);
+      continue;
+    }
+
+    const label = row.job_kind === "duplicate" ? "중복 확인" : "최종 검증";
+    throw new Error(`같은 후보의 ${label} 작업이 실제로 진행 중입니다: ${overlap.map((handle) => `@${handle}`).join(", ")}`);
+  }
   const { data, error } = await supabase
     .from("creator_verification_jobs")
     .insert({ category, handles: normalized, processed_handles: [], job_kind: jobKind })
@@ -343,6 +383,27 @@ function normalizeJobStatus(value: unknown): VerificationJobStatus {
 function nullableString(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
   return String(value);
+}
+
+async function isVerificationJobRuntimeActive(jobId: string, createdAt: number) {
+  const startupGraceMs = 30_000;
+  const ageMs = Number.isFinite(createdAt) ? Date.now() - createdAt : Number.POSITIVE_INFINITY;
+  if (ageMs <= startupGraceMs) return true;
+
+  const runtimeRoot = path.join(tmpdir(), "fixup-scout");
+  try {
+    const heartbeat = await stat(path.join(runtimeRoot, `${jobId}.heartbeat`));
+    if (Date.now() - heartbeat.mtimeMs <= 30_000) return true;
+  } catch {}
+
+  // 자동 실행은 ps1 artifact를 남긴다. artifact가 있는데 heartbeat가 끊겼다면 죽은 job이다.
+  try {
+    await stat(path.join(runtimeRoot, `${jobId}.ps1`));
+    return false;
+  } catch {}
+
+  // 수동 prompt job은 runtime artifact가 없으므로 기존 6시간 보호 창을 유지한다.
+  return ageMs <= 6 * 60 * 60 * 1000;
 }
 
 function normalizeHandles(handles: string[]) {

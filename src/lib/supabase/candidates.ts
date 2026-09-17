@@ -39,6 +39,57 @@ export async function findExistingHandles(handles: string[]) {
   return existing;
 }
 
+export async function listKnownCandidateHandles(category: SearchCategory) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return new Set<string>();
+
+  // normalized_handle is globally unique in creator_candidates, so load the full known set.
+  // This includes every handle from the current category and exactly matches final DB dedupe semantics.
+  const known = new Set<string>();
+  const pageSize = 1000;
+
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("creator_candidates")
+      .select("normalized_handle, category")
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      console.error("supabase_known_handle_list_failed", { category, message: error.message });
+      throw new Error("기존 후보 DB 조회에 실패해 Google 신규 탐색을 중단했습니다.");
+    }
+
+    for (const row of data ?? []) {
+      const handle = normalizeHandle(row.normalized_handle);
+      if (handle) known.add(handle);
+    }
+
+    if ((data ?? []).length < pageSize) break;
+  }
+
+  // Previously contacted handles are also already seen and must never count as new discovery yield.
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("creator_contacted_handles")
+      .select("normalized_handle")
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      console.error("supabase_contacted_handle_list_failed", { category, message: error.message });
+      throw new Error("기존 연락 후보 DB 조회에 실패해 Google 신규 탐색을 중단했습니다.");
+    }
+
+    for (const row of data ?? []) {
+      const handle = normalizeHandle(row.normalized_handle);
+      if (handle) known.add(handle);
+    }
+
+    if ((data ?? []).length < pageSize) break;
+  }
+
+  return known;
+}
+
 export async function mergeWithStoredReviewEvidence(candidates: DiscoveryCandidate[], category: SearchCategory) {
   const supabase = getSupabaseAdmin();
   if (!supabase || !candidates.length) return candidates;
@@ -315,7 +366,7 @@ export async function getAutomationCandidates(
     if (!requested.has(candidate.handle)) return false;
     const state = getCandidateViewState(candidate);
     if (mode === "duplicate") return state === "verification_needed" || state === "recommended";
-    return state === "duplicate_passed";
+    return state === "duplicate_passed" || state === "final_verification";
   });
 }
 
@@ -339,30 +390,38 @@ export async function savePreparedDm(category: SearchCategory, prepared: Prepare
   if (!supabase) throw new Error("Supabase가 설정되지 않았습니다.");
   if (!prepared.length) return;
 
-  for (const item of prepared) {
-    const { error } = await supabase
-      .from("creator_candidates")
-      .update({
-        dm_personalization_source: sanitizeDbText(item.personalizationSource),
-        dm_personalization_basis: sanitizeDbText(item.personalizationBasis),
-        dm_personalization_line: sanitizeDbText(item.personalizationLine),
-        dm_text: item.dmText,
-        dm_provider: item.provider,
-        dm_model: sanitizeDbText(item.model),
-        dm_generated_at: item.generatedAt,
-        updated_at: item.generatedAt,
-      })
-      .eq("normalized_handle", item.handle)
-      .eq("category", category)
-      .eq("duplicate_check_status", "available")
-      .eq("verification_status", "verified")
-      .eq("discovery_status", "qualified");
-
-    if (error) throw new Error(`@${item.handle} DM 저장 실패: ${error.message}`);
-  }
+  const failures: string[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(5, prepared.length) }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= prepared.length) return;
+      const item = prepared[index];
+      const { error } = await supabase
+        .from("creator_candidates")
+        .update({
+          dm_personalization_source: sanitizeDbText(item.personalizationSource),
+          dm_personalization_basis: sanitizeDbText(item.personalizationBasis),
+          dm_personalization_line: sanitizeDbText(item.personalizationLine),
+          dm_text: item.dmText,
+          dm_provider: item.provider === "deterministic" ? "fallback" : item.provider,
+          dm_model: sanitizeDbText(item.model),
+          dm_generated_at: item.generatedAt,
+          updated_at: item.generatedAt,
+        })
+        .eq("normalized_handle", item.handle)
+        .eq("category", category)
+        .eq("duplicate_check_status", "available")
+        .eq("verification_status", "verified")
+        .eq("discovery_status", "qualified");
+      if (error) failures.push(`@${item.handle}: ${error.message}`);
+    }
+  });
+  await Promise.all(workers);
+  if (failures.length) throw new Error(`DM 저장 실패 (${failures.length}건): ${failures.join(" / ")}`);
 }
 
-async function findContactedHandles(handles: string[]) {
+export async function findContactedHandles(handles: string[]) {
   const supabase = getSupabaseAdmin();
   if (!supabase || handles.length === 0) return new Set<string>();
   const normalized = [...new Set(handles.map((handle) => handle.toLowerCase()))];
@@ -424,7 +483,7 @@ function normalizeProvider(value: unknown): SearchProviderName {
 }
 
 function normalizeDmProvider(value: unknown): DmProvider | null {
-  return value === "groq" || value === "scaleway" || value === "fallback" ? value : null;
+  return value === "groq" || value === "scaleway" || value === "fallback" || value === "deterministic" ? value : null;
 }
 
 function normalizeFollowerSource(value: unknown): FollowerSource | null {

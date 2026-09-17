@@ -1,3 +1,4 @@
+throw 'Retired historical Mistral/NVIDIA diagnostic. Use the active preset-chain regression check and Nemotron FREE --variant high smoke test.'
 $ErrorActionPreference = 'Stop'
 
 $Repo = Split-Path -Parent $PSScriptRoot

@@ -1,4 +1,5 @@
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
+import { formatApprovedJapaneseDm } from "@/lib/dm/text-format";
 
 export type DmBatchInput = {
   contactId: string;
@@ -29,12 +30,13 @@ export function validateDmBatchInputs(inputs: DmBatchInput[]) {
     if (contactIds.has(contactId)) throw new Error(`DM batch에 중복 contactId가 있습니다: ${contactId}`);
     contactIds.add(contactId);
 
-    if (!input.approvedJapaneseText.trim()) throw new Error(`@${handle} 승인 일본어 DM이 비어 있습니다.`);
+    const approvedJapaneseText = formatApprovedJapaneseDm(input.approvedJapaneseText);
+    if (!approvedJapaneseText.trim()) throw new Error(`@${handle} 승인 일본어 DM이 비어 있습니다.`);
 
     return {
       contactId,
       handle,
-      approvedJapaneseText: input.approvedJapaneseText,
+      approvedJapaneseText,
     };
   });
 }
@@ -48,6 +50,12 @@ export function buildDmBatchInputPrompt(inputs: DmBatchInput[]) {
   const payload = JSON.stringify(validatedInputs, null, 2);
 
   return `playwright_b의 현재 Chrome 세션만 사용한다.
+
+EXECUTION OWNERSHIP - mandatory:
+- This main OpenCode agent must execute every browser action and every candidate itself.
+- Never call task, subagent, delegate, agent-handoff, or any equivalent delegation tool. Never hand candidates or browser work to another agent.
+- Never use playwright_b_browser_run_code_unsafe.
+- Never read .playwright-mcp snapshot files from disk. Use playwright_b browser snapshot output directly.
 
 목적: 아래 승인된 Instagram DM 원문들을 후보 순서대로 각 대상의 DM 입력창에 정확히 입력하고, 절대 실제 전송하지 않는다.
 
@@ -75,44 +83,50 @@ ${payload}
 - 성공한 후보의 Instagram 탭을 닫거나 다른 후보용으로 재사용 금지
 
 허용되는 행동은 각 후보에 대해 아래 범위뿐이다.
-- 후보 전용 새 Instagram 탭을 만든다.
+- 동일 handle 탭이 있으면 재사용하고 없을 때만 후보 전용 Instagram 탭을 만든다.
 - 정확한 대상 Instagram 프로필 및 해당 후보의 DM composer를 연다.
+- 최신 snapshot의 raw ref만 click/type target으로 사용한다.
 - approvedJapaneseText 전체를 줄바꿈 포함 문자 그대로 입력한다.
 - 입력창에 승인 원문이 정확히 들어갔는지 확인한다.
-- 일반 click이 실제 존재하는 메시지 버튼의 visible/stable 대기 timeout으로만 실패한 경우, 안전한 browser_evaluate로 그 동일 버튼을 한 번 click한다.
+- click stale/actionability 실패는 fresh snapshot으로 새 raw ref를 resolve한 뒤 같은 후보에서 정확히 1회만 재시도한다.
 
 후보별 탭 규칙:
-- 승인 데이터 1명당 Instagram 탭 1개를 새로 만든다.
-- 기존 Instagram 탭을 다음 후보로 navigate해서 재사용하지 않는다.
+- 후보는 반드시 한 명씩 순차 처리한다. 다음 후보 탭을 미리 여러 개 열어 두지 않는다.
+- 동일 handle의 Instagram 탭이 이미 열려 있으면 그 탭을 재사용한다. 없을 때만 후보 전용 새 탭을 만든다.
+- 기존 Instagram 탭을 다른 후보로 navigate해서 재사용하지 않는다.
 - 성공 후보는 DM composer와 입력한 승인 문구가 그대로 보이는 상태로 탭을 유지한다.
 - 사용자가 작업 후 탭을 직접 넘겨 보며 확인하고 Send할 수 있어야 한다.
-- 후보가 실패해도 Scout 탭과 이미 성공한 Instagram 탭은 그대로 둔다.
+- 후보가 영구 실패해도 Scout 탭과 이미 성공한 Instagram 탭은 그대로 둔다.
 
 처리 방식:
-승인 데이터 배열의 순서를 그대로 따른다. 후보 1명마다 아래를 수행하고 반드시 다음 후보로 진행한다.
-1. handle은 승인 JSON의 실제 문자열만 사용한다. Markdown 표시용 escape를 실제 handle에 넣지 않는다. 예: "__.izu"는 정상이고 "\\_\\_.izu"는 잘못된 값이다.
-2. 후보 전용 새 탭을 만들고 https://www.instagram.com/{handle}/ 프로필을 연다.
-3. snapshot에서 정확한 "메시지 보내기"/Message 버튼을 찾는다.
-4. 버튼이 있으면 일반 click을 정확히 1회 시도한다.
-5. 일반 click이 visible/stable 대기 timeout으로만 실패했고 snapshot/DOM에서 그 버튼이 실제 존재하는 것이 확인된 경우에만, playwright_b의 안전한 browser_evaluate를 사용해 그 동일 버튼 click을 정확히 1회 시도한다.
-6. 위 두 시도 후에도 composer가 열리지 않으면 inbox → profile → inbox 같은 우회 반복을 하지 않는다. 해당 후보만 failed 처리하고 다음 후보로 간다.
-7. 버튼 자체가 없거나 계정/페이지 문제면 억지로 재탐색·반복하지 않고 해당 후보만 failed 처리한다.
-8. 실제 메시지 입력창을 찾는다.
-9. 해당 후보 approvedJapaneseText 전체를 줄바꿈 포함 그대로 입력한다. 입력 후 Enter를 누르지 않는다.
-10. 입력창의 내용이 approvedJapaneseText와 정확히 같은지 확인한다.
-11. 성공하면 해당 후보 탭을 그대로 유지한 채 아래 결과 API에 해당 contactId/handle로 success를 POST한다.
-12. 프로필/DM composer/입력/확인 중 해당 후보만 실패하면 failed와 실제 실패 이유를 POST한 뒤, 전체 작업을 중단하지 말고 다음 후보로 계속 진행한다.
+승인 데이터 배열의 순서를 그대로 따른다. 후보 1명마다 아래를 끝낸 뒤에만 다음 후보로 진행한다.
+1. handle은 승인 JSON의 실제 문자열만 사용한다. Markdown escape를 실제 handle에 넣지 않는다.
+2. 동일 handle Instagram 탭이 이미 있으면 선택하고, 없으면 https://www.instagram.com/{handle}/ 전용 탭을 새로 만든다. 다른 후보 탭을 navigate해서 재사용하지 않는다.
+3. 후보 프로필에서 fresh full snapshot을 1회 얻는다. browser_click target에는 snapshot의 raw ref token만 사용한다. 예: e205 또는 f12e205. "[ref=e205]", "ref=e205", label 문자열, CSS, XPath를 target으로 만들지 않는다.
+4. 이미 DM composer가 열려 있으면 입력 단계로 간다. 아니면 최신 snapshot에서 accessible name이 정확히 "메시지 보내기", "Message", "メッセージ" 중 하나인 button을 고르고 그 raw ref를 즉시 click한다.
+5. click이 Ref not found, does not match any elements, detached/stale, visible/enabled/stable actionability timeout 중 하나로 실패하면 같은 후보 안에서만 bounded recovery를 한다: 현재 URL/handle 확인 -> fresh full snapshot -> 동일 의미의 message button을 새 raw ref로 다시 resolve -> 정확히 1회 재시도. 실패한 ref는 재사용하지 않는다. 그래도 실패하면 이 run을 종료하고 해당 후보와 남은 후보는 pending으로 둔다. provider fallback으로 browser 오류를 우회하지 않는다.
+6. composer가 열리면 fresh full snapshot에서 실제 editable message input의 raw ref를 찾는다. Send 버튼은 찾더라도 절대 click하지 않는다.
+7. 현재 draft가 approvedJapaneseText와 정확히 같으면 다시 입력하지 않고 success 처리한다. draft가 비어 있거나 일부/다른 텍스트라면 browser_type을 사용해 해당 editor raw ref에 approvedJapaneseText 전체를 한 번 fill한다. submit:false로 호출하고 Enter를 누르지 않는다.
+8. 입력 직후 fresh full snapshot으로 draft를 다시 확인한다. 줄바꿈 포함 승인 원문과 exact match일 때만 success를 POST한다. 불일치하면 같은 텍스트를 반복 입력하지 말고 현재 run을 종료해 해당 후보와 남은 후보를 pending으로 둔다.
+9. success 저장 뒤 해당 Instagram 탭을 composer와 draft가 그대로 보이는 상태로 유지하고 다음 후보로 진행한다.
+10. 계정이 실제로 존재하지 않음, 안정적으로 로드된 프로필에 message button 자체가 없음처럼 후보 자체의 명확한 영구 사유만 failed POST한다. Instagram/Playwright의 일시 오류는 failed로 확정하지 않는다.
+
+브라우저 오류 분류:
+- browser_tabs/snapshot 자체가 연결 불가, Extension not connected, MCP transport/server failure이면 browser_unavailable로 종료한다.
+- stale/ref/actionability/button click 문제는 provider/model 문제가 아니다. 같은 후보의 fresh resolve 1회 안에서만 복구한다.
+- Muse -> Nemotron -> Qwen -> GLM처럼 모델을 바꿔 deterministic browser action failure를 반복하지 않는다.
+- Scout localhost 탭과 Profile 3 로그인 세션은 보존한다. 실제 Send는 항상 0건이어야 한다.
 
 후보별 결과 POST:
-POST http://localhost:3000/api/dm/opencode-result
+Use fixup_result_dm({payload: JSON_OBJECT}) only; it POSTs to http://localhost:3000/api/dm/opencode-result. Never assemble shell commands.
 Content-Type: application/json
 성공: {"contactId":"<해당 contactId>","handle":"<해당 handle>","status":"success"}
-실패: {"contactId":"<해당 contactId>","handle":"<해당 handle>","status":"failed","error":"실제 실패 이유"}
+영구 실패만: {"contactId":"<해당 contactId>","handle":"<해당 handle>","status":"failed","error":"실제 영구 실패 이유"}
 
 중요:
 - Scout localhost 탭은 결과 POST를 위해서도 navigate하지 않는다. 결과 API는 HTTP 요청으로만 호출한다.
-- 한 후보의 실패 때문에 나머지 후보를 건너뛰지 않는다.
-- 현재 Chrome 세션 자체를 더 이상 사용할 수 없는 전역 오류가 발생한 경우에만, 아직 처리하지 못한 모든 후보를 각각 failed로 기록하고 종료한다.
+- 한 후보의 영구 실패 때문에 나머지 후보를 건너뛰지 않는다.
+- 일시적인 Instagram/Playwright 제한이 발생하면 아직 처리하지 않은 후보는 pending 상태로 그대로 남기고 이번 run만 종료한다.
 - 각 결과 API의 ok:true를 확인한다.
 - 마지막 후보까지 처리한 뒤 종료한다.
 - 성공한 모든 후보의 Instagram 탭은 입력 내용이 남은 상태로 유지한다.

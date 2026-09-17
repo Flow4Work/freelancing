@@ -20,8 +20,7 @@ export function classifySearchStage(input: SearchStageClassificationInput): Cand
   }
 
   if (
-    input.accountAvailability === "active"
-    && input.accountType === "creator"
+    input.accountType === "creator"
     && (input.koreaAffinity === "strong" || input.koreaAffinity === "yes")
     && input.contentFit === input.category
     && input.eligibility === "possible"

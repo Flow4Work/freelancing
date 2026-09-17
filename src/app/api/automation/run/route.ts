@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertLocalRequest, assertOpenCodeAvailable, launchOpenCodeJob } from "@/lib/automation/opencode-launcher";
+import { getOpenCodeFailureTrace } from "@/lib/automation/opencode-runtime";
 import { buildDuplicateCheckPrompt } from "@/lib/discovery/duplicate-prompt";
 import { buildOpenCodeVerificationPrompt } from "@/lib/discovery/opencode-prompt";
 import { getCandidateViewState } from "@/lib/discovery/presentation";
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
     ]);
     const candidateMap = new Map(candidates.map((candidate) => [candidate.handle, candidate]));
 
-    const verificationItems = jobs.map((job) => {
+    const verificationItems = await Promise.all(jobs.map(async (job) => {
       const processedSet = new Set(job.processedHandles);
       const remainingHandles = job.handles.filter((handle) => !processedSet.has(handle));
       const groups = job.resultSummary?.groups
@@ -67,7 +68,7 @@ export async function GET(request: Request) {
         createdAt: job.createdAt,
         completedAt: job.completedAt,
         failedAt: job.failedAt,
-        failureMessage: job.failureMessage,
+        failureMessage: job.status === "failed" ? job.failureMessage ?? (await getOpenCodeFailureTrace(job.id)) : job.failureMessage,
         destination: mainDestination?.destination ?? (job.jobKind === "duplicate" ? "중복 통과" : "최종 검증 완료"),
         destinationCount: mainDestination?.handles.length ?? 0,
         excludedCount,
@@ -75,7 +76,7 @@ export async function GET(request: Request) {
         groups,
         exactSnapshot: Boolean(job.resultSummary),
       };
-    });
+    }));
 
     const discoveryItems = discoveryRuns
       .filter((run) => run.completedAt)
@@ -137,6 +138,7 @@ export async function POST(request: Request) {
       prompt,
       jobId,
       title: parsed.data.mode === "duplicate" ? "중복 확인" : "Instagram 원본 검증",
+      mode: parsed.data.mode === "duplicate" ? "duplicate" : "verification",
     });
 
     return NextResponse.json({

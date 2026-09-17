@@ -1,14 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
+import { getOpenCodeModelChain, getOpenCodeVariantArgsScript } from "./opencode-model-preset";
+import { getOpenCodeAgent } from "./opencode-execution-policy";
+import { getOpenCodeRuntimeRoot, getVerificationPostFailurePath } from "./opencode-runtime";
 
-const DEFAULT_PRIMARY_MODEL = "opencode/muse-spark-1.2-contributor-free";
-const DEFAULT_MISTRAL_MODEL = "mistral/mistral-medium-2604";
-const DEFAULT_DEEPSEEK_MODEL = "nvidia/deepseek-ai/deepseek-v4-flash-0731";
-const DEFAULT_KIMI_MODEL = "nvidia/moonshotai/kimi-k3";
-const DEFAULT_STALL_SECONDS = 75;
+export { getOpenCodeModelChain } from "./opencode-model-preset";
+
 const DEFAULT_MAX_RETRY_AFTER_SECONDS = 15;
 
 export function assertLocalRequest(request: Request) {
@@ -33,9 +32,9 @@ export function assertOpenCodeAvailable() {
   }
 }
 
-export async function launchOpenCodeJob(input: { prompt: string; jobId: string; title: string }) {
+export async function launchOpenCodeJob(input: { prompt: string; jobId: string; title: string; mode: "duplicate" | "verification" }) {
   const command = getOpenCodeCommand();
-  const root = path.join(tmpdir(), "fixup-scout");
+  const root = getOpenCodeRuntimeRoot();
   await mkdir(root, { recursive: true });
 
   const promptPath = path.join(root, `${input.jobId}.md`);
@@ -44,14 +43,15 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const failedPath = path.join(root, `${input.jobId}.failed`);
   const openCodeLogPath = path.join(root, `${input.jobId}.opencode.log`);
   const watcherPath = path.join(root, `${input.jobId}.watch.ps1`);
-  const duplicateJob = input.title === "중복 확인";
-  const modelChain = [...new Set([
-    getEnvModel("FIXUP_OPENCODE_PRIMARY_MODEL", DEFAULT_PRIMARY_MODEL),
-    getEnvModel("FIXUP_OPENCODE_MISTRAL_MODEL", DEFAULT_MISTRAL_MODEL),
-    getEnvModel("FIXUP_OPENCODE_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
-    getEnvModel("FIXUP_OPENCODE_KIMI_MODEL", DEFAULT_KIMI_MODEL),
-  ])];
-  const stallSeconds = getBoundedInteger("FIXUP_OPENCODE_STALL_SECONDS", DEFAULT_STALL_SECONDS, 30, 600);
+  const watcherLogPath = path.join(root, `${input.jobId}.watch.log`);
+  const heartbeatPath = path.join(root, `${input.jobId}.heartbeat`);
+  const postFailurePath = getVerificationPostFailurePath(input.jobId);
+  const duplicateJob = input.mode === "duplicate";
+  const openCodeAgent = getOpenCodeAgent(input.mode);
+  const modelChain = getOpenCodeModelChain();
+  const chromePath = process.env.FIXUP_OPENCODE_CHROME_PATH?.trim()
+    || String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`;
+  const chromeProfile = process.env.FIXUP_OPENCODE_CHROME_PROFILE?.trim() || "Profile 3";
   const maxRetryAfterSeconds = getBoundedInteger(
     "FIXUP_OPENCODE_MAX_RETRY_AFTER_SECONDS",
     DEFAULT_MAX_RETRY_AFTER_SECONDS,
@@ -64,20 +64,22 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
     rm(failedPath, { force: true }),
     rm(openCodeLogPath, { force: true }),
     rm(watcherPath, { force: true }),
+    rm(watcherLogPath, { force: true }),
+    rm(heartbeatPath, { force: true }),
+    rm(postFailurePath, { force: true }),
   ]);
 
-  const resumeInstruction = `\n- 이 실행은 provider/model fallback 재개 실행일 수 있다. 시작 직후 http://localhost:3000/api/automation/job?jobId=${input.jobId} 를 GET으로 딱 1회 확인한다.\n- processedHandles에 있는 계정은 이미 Scout 저장이 끝난 결과다. 절대 다시 검사하거나 다시 POST하지 않는다. remaining 계정만 처리한다.\n- processedHandles가 비어 있으면 본문 순서대로 처음부터 정상 실행한다.\n- 이 job 상태 GET은 재개 지점 확인용이며 verification/results GET, 임의 /health 호출, route/code 탐색으로 확장하지 않는다.`;
-
+  const resumeInstruction = `\n- The launcher resolves job progress before every attempt and injects the exact remaining handles into the run instruction. Process only those handles.\n- Never call /api/automation/job, verification/results GET, /health, or any status endpoint yourself.\n- A handle omitted from the launcher-provided remaining list is already processed and must never be revisited or POSTed again.`;
+  const duplicateResumeInstruction = `\n- The launcher resolves the job terminal state. Candidate-level resume is owned only by the Apps Script origin localStorage checkpoint described in the task prompt.\n- Never call /api/automation/job, verification/results GET, /health, or any status endpoint yourself.\n- A valid checkpoint result or inFlight recovery must never be re-clicked; continue only from the first unfinished checkpoint entry.`;
   const reliabilityInstruction = duplicateJob
-    ? `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 중복 확인이다. 본문에 적힌 1차/2차 batch 저장 방식을 그대로 지키며 후보 1명마다 POST하지 않는다.\n- FixUp 전원 판정 → duplicate/protected/unknown 1차 batch → 필요한 available의 Instagram followers만 확인 → available 2차 batch 순서를 바꾸지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 본문의 FixUp 중복 페이지로 이동한다.\n- BIO/Reels/게시물 검증은 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 batch를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${resumeInstruction}`
-    : `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 Instagram 최종 검증이다. 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 첫 후보 Instagram 프로필로 이동한다.\n- /reels/ 로딩 실패 시 짧게 대기 → 최신 snapshot → 필요하면 같은 /reels/ 1회 재이동 또는 reload까지만 허용한다. 그래도 조회수를 읽지 못하면 reels:[]와 확인 불가 사유를 note에 넣어 즉시 POST하고 다음 후보로 간다.\n- Reels 실패 때문에 network/GraphQL/request body 분석, HTML dump 반복, 다른 후보 Reels 페이지 재방문을 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${resumeInstruction}`;
+    ? `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 중복 확인이다. FixUp 전원 판정 → 전원 결과 정확히 1회 batch POST → completed:true 확인 순서만 실행한다.\n- Instagram은 절대 열지 않는다. followers/BIO/Reels/게시물/DM은 최종 검증 단계에서만 확인한다.\n- 후보별 POST, 1차/2차 분할 POST, available 별도 후처리를 하지 않는다.\n- 본문의 단일 async browser_evaluate DOM loop를 사용한다. 후보별 fill/find/snapshot/click/wait tool round-trip으로 되돌아가지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 현재 browser form/checkpoint를 먼저 확인하고, form이 없을 때만 본문의 FixUp 중복 페이지로 이동한다.\n- playwright_b 호출이 spawn/연결/timeout/MCP 오류로 실패하면 agent-browser, 다른 브라우저, webfetch, curl/Invoke-WebRequest, 직접 HTTP, 패키지 설치로 우회하지 않는다. 결과를 추정하거나 POST하지 말고 즉시 종료한다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실제 호출 후 응답 유실/실패 시 임의 재전송하지 않고 attempt를 종료한다. launcher가 job 상태를 다시 확인한다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${duplicateResumeInstruction}`
+    : `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 Instagram 최종 검증이다. 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 첫 후보 Instagram 프로필로 이동한다.\n- playwright_b 호출이 spawn/연결/timeout/MCP 오류로 실패하면 agent-browser, 다른 브라우저, webfetch, curl/Invoke-WebRequest, 직접 HTTP, 패키지 설치로 우회하지 않는다. 결과를 추정하거나 POST하지 말고 즉시 종료한다.\n- /reels/ 로딩 실패 시 짧게 대기 → 최신 snapshot → 필요하면 같은 /reels/ 1회 재이동 또는 reload까지만 허용한다. 그래도 조회수를 읽지 못하면 reels:[]와 확인 불가 사유를 note에 넣어 즉시 POST하고 다음 후보로 간다.\n- Reels 실패 때문에 network/GraphQL/request body 분석, HTML dump 반복, 다른 후보 Reels 페이지 재방문을 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${resumeInstruction}`;
 
   await writeFile(promptPath, `${input.prompt}${reliabilityInstruction}`, { encoding: "utf8" });
 
   const openCodeInstruction = duplicateJob
-    ? "첨부된 FixUp Scout 작업 지시만 실행해. 재개 상태 GET 1회 뒤 미처리 후보만 처리하고, 본문의 최대 2회 batch POST 구조와 마지막 completed:true 확인을 그대로 지켜."
-    : "첨부된 FixUp Scout 작업 지시만 실행해. 재개 상태 GET 1회 뒤 미처리 후보만 처리하고, 후보별 즉시 POST와 마지막 completed:true 확인을 그대로 지켜.";
-
+    ? "Execute only the attached FixUp duplicate-check task. Do not query job status yourself. Use the durable browser checkpoint, perform only the required duplicate result POST, and stop immediately after completed:true."
+    : "Execute only the attached FixUp Instagram verification task. Do not query job status yourself. Process only the exact launcher-provided remaining handles, POST each completed candidate once, and stop immediately after completed:true.";
   const script = `$ErrorActionPreference = "Stop"
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8
@@ -90,13 +92,18 @@ $PromptFile = ${psQuote(promptPath)}
 $InvokedFile = ${psQuote(invokedPath)}
 $FailedFile = ${psQuote(failedPath)}
 $AttemptLogFile = ${psQuote(openCodeLogPath)}
+$HeartbeatFile = ${psQuote(heartbeatPath)}
+$PostFailureFile = ${psQuote(postFailurePath)}
+$OpenCodeAgent = ${psQuote(openCodeAgent)}
+$ExecutionMode = ${psQuote(input.mode)}
 $JobId = ${psQuote(input.jobId)}
 $JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
 $OpenCodeInstruction = ${psQuote(openCodeInstruction)}
 $ModelChain = @(${modelChain.map((model) => psQuote(model)).join(", ")})
-$IdleLimitSeconds = ${stallSeconds}
 $MaxRetryAfterSeconds = ${maxRetryAfterSeconds}
 $PollSeconds = 5
+$ChromePath = ${psQuote(chromePath)}
+$ChromeProfile = ${psQuote(chromeProfile)}
 
 function Get-FixUpJobStatus {
   return Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10
@@ -109,6 +116,27 @@ function Set-FixUpJobFailed([string]$Message) {
   } catch {
     Write-Host "[FixUp Scout] 실패 상태 저장도 실패했습니다: $($_.Exception.Message)" -ForegroundColor DarkYellow
     return $null
+  }
+}
+
+function Write-Heartbeat {
+  try { [IO.File]::WriteAllText($HeartbeatFile, "$PID|$(Get-Date -Format o)", $Utf8) } catch {}
+}
+
+function Get-VerificationPostFailure {
+  if (-not (Test-Path -LiteralPath $PostFailureFile)) { return $null }
+  try {
+    $Message = (Get-Content -LiteralPath $PostFailureFile -Raw -ErrorAction Stop).Trim()
+    if ([string]::IsNullOrWhiteSpace($Message)) { return "verification POST failed" }
+    return $Message
+  } catch {
+    return "verification POST failed"
+  }
+}
+
+function Ensure-PlaywrightBChrome {
+  if (-not (Test-Path -LiteralPath $ChromePath)) {
+    throw "playwright_b용 Chrome을 찾을 수 없습니다: $ChromePath"
   }
 }
 
@@ -128,12 +156,46 @@ function Write-AttemptEvent([string]$Model, [string]$Classification, [bool]$Fall
   try { [IO.File]::AppendAllText($AttemptLogFile, $Line + [Environment]::NewLine, $Utf8) } catch {}
 }
 
+function Write-ControlEvent([string]$Model, [int]$Sequence, [int]$AttemptPid) {
+  $Provider = Get-ProviderName $Model
+  $Line = "[FixUp Scout][control] provider=$Provider model=$Model attempt=$Sequence pid=$AttemptPid state=running"
+  Write-Host $Line -ForegroundColor DarkGray
+  try { [IO.File]::AppendAllText($AttemptLogFile, $Line + [Environment]::NewLine, $Utf8) } catch {}
+}
+
+function Write-DiagnosticEvent([string]$Model, [string]$Classification, [bool]$Fallback, [int]$ExitCode, [string]$Detail) {
+  $Provider = Get-ProviderName $Model
+  $Progress = "unknown"
+  try { $State = Get-FixUpJobStatus; $Progress = "$($State.processedCount)/$($State.totalCount)" } catch {}
+  $SafeDetail = ($Detail -replace '[\t\r\n ]+', ' ').Trim()
+  if ($SafeDetail.Length -gt 320) { $SafeDetail = $SafeDetail.Substring(0, 320) }
+  $ExitLabel = if ($ExitCode -lt 0 -or $Classification -in @("verification_post_failure", "request_or_program", "job_failed")) { "unknown" } else { [string]$ExitCode }
+  $BrowserMcp = if ($Classification -eq "browser_unavailable") { "failed" } elseif ($Classification -eq "tool_execution") { "tool_error" } else { "not_detected" }
+  $Line = "[FixUp Scout][diag] timestamp=$([DateTime]::UtcNow.ToString('o')) jobId=$JobId jobKind=$ExecutionMode progress=$Progress model=$Model provider=$Provider classification=$Classification fallback=$Fallback processExitCode=$ExitLabel wrapperExitCode=$ExitLabel httpStatus=unknown browserMcp=$BrowserMcp raw=$SafeDetail"
+  try { [IO.File]::AppendAllText($AttemptLogFile, $Line + [Environment]::NewLine, $Utf8) } catch {}
+}
+
+function Get-AttemptSummary([string]$Model, [string]$Classification, [string]$Detail) {
+  $Slash = $Model.IndexOf("/")
+  $Label = if ($Slash -ge 0 -and $Slash + 1 -lt $Model.Length) { $Model.Substring($Slash + 1) } else { $Model }
+  $Reason = if ($Classification -eq "quota" -and $Detail -match "OpenRouter") { "OpenRouter 일일한도" }
+    elseif ($Classification -eq "quota") { "quota" }
+    elseif ($Classification -eq "rate_limit") { "429" }
+    elseif ($Classification -eq "provider_unavailable") { "5xx/일시장애" }
+    elseif ($Classification -eq "browser_unavailable") { "브라우저/MCP" }
+    elseif ($Classification -eq "tool_execution") { "브라우저/도구실행" }
+    elseif ($Classification -eq "incomplete") { "미완료" }
+    elseif ($Classification -eq "verification_post_failure") { "POST실패" }
+    else { $Classification }
+  return "$Label=$Reason"
+}
+
 function Get-AttemptText([string]$StdoutFile, [string]$StderrFile) {
   $Parts = @()
   foreach ($Path in @($StdoutFile, $StderrFile)) {
     try {
       if (Test-Path -LiteralPath $Path) {
-        $Parts += (Get-Content -LiteralPath $Path -Tail 160 -ErrorAction Stop | Out-String)
+        $Parts += (Get-Content -LiteralPath $Path -Tail 160 -Encoding UTF8 -ErrorAction Stop | Out-String)
       }
     } catch {}
   }
@@ -171,7 +233,11 @@ function Test-AuthFailure([string]$Text) {
 }
 function Test-NonFallbackProgramFailure([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  return $Text -match '(?i)(invalid[_ -]?request|zoderror|schema(?:\\s+validation)?(?:\\s+error)?|validation error|context(?:\\s+length|\\s+window)(?:\\s+\\w+){0,5}\\s+(?:exceed|overflow|too long)|maximum context|too many tokens|invalid tool|tool(?:\\s+call)?(?:\\s+\\w+){0,4}\\s+(?:invalid arguments|schema error|program error)|POST_FAILED|작업 종류가 일치하지 않습니다|작업 후보가 아닌 계정|이미 실패 처리된 작업)'
+  return $Text -match '(?i)(invalid[_ -]?request|zoderror|(?:invalid|malformed)(?:\\s+\\w+){0,2}\\s+schema|schema(?:\\s+validation)?\\s+(?:error|failed|failure)|validation error|context(?:\\s+length|\\s+window)(?:\\s+\\w+){0,5}\\s+(?:exceed|overflow|too long)|maximum context|too many tokens|invalid tool arguments|tool(?:\\s+call)?(?:\\s+\\w+){0,4}\\s+(?:invalid arguments|schema error|program error)|spawn unknown|mcp(?:\\s+\\w+){0,2}\\s+(?:error|timeout)|POST_FAILED|작업 종류가 일치하지 않습니다|작업 후보가 아닌 계정|이미 실패 처리된 작업)'
+}
+function Test-SemanticProgress([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return $Text -match '(?im)^\\[FixUp OpenCode\\] progress=(?:step_start|step_finish|tool_use|text)\\s*$|"type"\\s*:\\s*"(?:step_start|step_finish|tool_use|text)"'
 }
 function Test-TransientRateLimit([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
@@ -210,11 +276,14 @@ function Get-RetryAfterSeconds([string]$Text) {
   return $null
 }
 function Get-FailureClassification([string]$Text, [int]$ExitCode) {
-  if (Test-QuotaExhaustion $Text) { return "quota" }
-  if (Test-AuthFailure $Text) { return "auth" }
-  if (Test-NonFallbackProgramFailure $Text) { return "request_or_program" }
-  if (Test-TransientRateLimit $Text) { return "rate_limit" }
-  if (Test-ProviderUnavailable $Text) { return "provider_unavailable" }
+  if ($Text -match 'FIXUP_LOCAL_permission_denied' -or $ExitCode -eq 177) { return "permission_denied" }
+  if ($Text -match 'FIXUP_LOCAL_post_failure' -or $ExitCode -eq 178) { return "post_failure" }
+  if ($Text -match 'FIXUP_LOCAL_browser_unavailable' -or $ExitCode -eq 176) { return "browser_unavailable" }
+  if ($Text -match 'FIXUP_LOCAL_tool_execution' -or $ExitCode -eq 179) { return "tool_execution" }
+  if ($ExitCode -eq 180) { return "local_execution" }
+  if ($ExitCode -eq 173 -or $ExitCode -eq 174) { return "quota" }
+  if ($ExitCode -eq 175) { return "provider_unavailable" }
+  if ($ExitCode -eq 176) { return "browser_unavailable" }
   if ($ExitCode -eq 0) { return "incomplete" }
   return "other"
 }
@@ -232,12 +301,28 @@ function Invoke-OpenCodeAttempt([string]$Model, [int]$Sequence) {
   $StdoutFile = Join-Path ([IO.Path]::GetDirectoryName($AttemptLogFile)) ("$JobId.attempt-$Sequence.stdout.log")
   $StderrFile = Join-Path ([IO.Path]::GetDirectoryName($AttemptLogFile)) ("$JobId.attempt-$Sequence.stderr.log")
   Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $PostFailureFile -Force -ErrorAction SilentlyContinue
+
+  $AttemptInstruction = $OpenCodeInstruction
+  try {
+    $ResumeJob = Get-FixUpJobStatus
+    if ($ExecutionMode -eq "verification") {
+      $RemainingHandles = @($ResumeJob.remainingHandles)
+      if ($ResumeJob.status -eq "pending" -and $RemainingHandles.Count -eq 0) {
+        return [pscustomobject]@{ classification = "request_or_program"; exitCode = -1; retryAfter = $null; detail = "pending verification job has no remaining handles" }
+      }
+      $AttemptInstruction += " Exact remaining handles for this attempt: " + [string]::Join(", ", [string[]]$RemainingHandles) + "."
+    }
+  } catch {
+    return [pscustomobject]@{ classification = "request_or_program"; exitCode = -1; retryAfter = $null; detail = "job resume state lookup failed: $($_.Exception.Message)" }
+  }
 
   $env:FIXUP_SCOUT_OPEN_CODE = $OpenCode
   $env:FIXUP_SCOUT_PROMPT_FILE = $PromptFile
-  $env:FIXUP_SCOUT_INSTRUCTION = $OpenCodeInstruction
+  $env:FIXUP_SCOUT_INSTRUCTION = $AttemptInstruction
+  $env:FIXUP_SCOUT_AGENT = $OpenCodeAgent
   $env:FIXUP_SCOUT_MODEL = $Model
-  $ChildCommand = '$ErrorActionPreference="Stop"; $Utf8=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$Utf8; $OutputEncoding=$Utf8; try { chcp 65001 > $null } catch {}; & $env:FIXUP_SCOUT_OPEN_CODE run $env:FIXUP_SCOUT_INSTRUCTION --file $env:FIXUP_SCOUT_PROMPT_FILE --model $env:FIXUP_SCOUT_MODEL; $Code=$LASTEXITCODE; if ($null -eq $Code) { $Code=0 }; exit $Code'
+  $ChildCommand = '$ErrorActionPreference="Stop"; $Utf8=New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding=$Utf8; $OutputEncoding=$Utf8; try { chcp 65001 > $null } catch {}; ${getOpenCodeVariantArgsScript("$env:FIXUP_SCOUT_MODEL")}; & $env:FIXUP_SCOUT_OPEN_CODE run $env:FIXUP_SCOUT_INSTRUCTION --file $env:FIXUP_SCOUT_PROMPT_FILE --model $env:FIXUP_SCOUT_MODEL --agent $env:FIXUP_SCOUT_AGENT @VariantArgs; $Code=$LASTEXITCODE; if ($null -eq $Code) { $Code=0 }; exit $Code'
   $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ChildCommand))
 
   try {
@@ -246,94 +331,61 @@ function Invoke-OpenCodeAttempt([string]$Model, [int]$Sequence) {
     return [pscustomobject]@{ classification = "request_or_program"; exitCode = -1; retryAfter = $null; detail = "OpenCode attempt 시작 실패: $($_.Exception.Message)" }
   }
 
-  $LastActivityAt = [DateTime]::UtcNow
-  $StdoutOffset = 0L
-  $StderrOffset = 0L
-  $RateLimitAt = $null
-  $RateLimitRetryAfter = $null
+  $null = $Attempt.Handle
+  $LastProcessedCount = 0
+  try {
+    $InitialJob = Get-FixUpJobStatus
+    $LastProcessedCount = [int]$InitialJob.processedCount
+  } catch {}
+
+  Write-Heartbeat
+  Write-ControlEvent $Model $Sequence $Attempt.Id
+  Write-Host "[FixUp Scout] supervisor · PID $($Attempt.Id) · wrapper phase supervision" -ForegroundColor DarkGray
 
   while (-not $Attempt.HasExited) {
+    Write-Heartbeat
     Start-Sleep -Seconds $PollSeconds
+
+    $PostFailure = Get-VerificationPostFailure
+    if ($null -ne $PostFailure) {
+      Stop-FixUpAttemptTree $Attempt.Id
+      return [pscustomobject]@{ classification = "verification_post_failure"; exitCode = 409; retryAfter = $null; detail = [string]$PostFailure }
+    }
 
     $Job = $null
     try { $Job = Get-FixUpJobStatus } catch {}
+    if ($null -ne $Job -and [int]$Job.processedCount -gt $LastProcessedCount) {
+      $LastProcessedCount = [int]$Job.processedCount
+    }
     if ($null -ne $Job -and $Job.status -eq "completed") {
       Stop-FixUpAttemptTree $Attempt.Id
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
       return [pscustomobject]@{ classification = "completed"; exitCode = 0; retryAfter = $null; detail = "job completed" }
     }
     if ($null -ne $Job -and $Job.status -eq "failed") {
       Stop-FixUpAttemptTree $Attempt.Id
       $Detail = if ($Job.failureMessage) { [string]$Job.failureMessage } else { "job failed" }
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
       return [pscustomobject]@{ classification = "job_failed"; exitCode = -1; retryAfter = $null; detail = $Detail }
     }
 
-    $StdoutDelta = Get-NewAttemptText $StdoutFile $StdoutOffset
-    $StderrDelta = Get-NewAttemptText $StderrFile $StderrOffset
-    $StdoutOffset = [long]$StdoutDelta.length
-    $StderrOffset = [long]$StderrDelta.length
-    $Text = @([string]$StdoutDelta.text, [string]$StderrDelta.text) -join [Environment]::NewLine
-    $Changed = -not [string]::IsNullOrEmpty($Text)
-    if ($Changed) { $LastActivityAt = [DateTime]::UtcNow }
 
-    if (Test-QuotaExhaustion $Text) {
-      Stop-FixUpAttemptTree $Attempt.Id
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
-      return [pscustomobject]@{ classification = "quota"; exitCode = 429; retryAfter = $null; detail = "명확한 무료 사용량/quota/credit 소진 응답" }
-    }
-    if (Test-AuthFailure $Text) {
-      Stop-FixUpAttemptTree $Attempt.Id
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
-      return [pscustomobject]@{ classification = "auth"; exitCode = 401; retryAfter = $null; detail = "API key/auth 오류" }
-    }
-    if (Test-NonFallbackProgramFailure $Text) {
-      Stop-FixUpAttemptTree $Attempt.Id
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
-      return [pscustomobject]@{ classification = "request_or_program"; exitCode = 400; retryAfter = $null; detail = "request/schema/context/tool/program 오류" }
-    }
-
-    $CurrentRateLimit = Test-TransientRateLimit $Text
-    if ($CurrentRateLimit) {
-      if ($null -eq $RateLimitAt) {
-        $RateLimitAt = [DateTime]::UtcNow
-        $RateLimitRetryAfter = Get-RetryAfterSeconds $Text
-      }
-    } elseif ($Changed -and $null -ne $RateLimitAt) {
-      $RateLimitAt = $null
-      $RateLimitRetryAfter = $null
-    }
-
-    if ($null -ne $RateLimitAt) {
-      $AllowedSeconds = if ($null -ne $RateLimitRetryAfter -and $RateLimitRetryAfter -gt 0 -and $RateLimitRetryAfter -le $MaxRetryAfterSeconds) {
-        [Math]::Min($MaxRetryAfterSeconds + 5, $RateLimitRetryAfter + 5)
-      } else {
-        10
-      }
-      if (([DateTime]::UtcNow - $RateLimitAt).TotalSeconds -ge $AllowedSeconds) {
-        Stop-FixUpAttemptTree $Attempt.Id
-        Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
-        return [pscustomobject]@{ classification = "rate_limit"; exitCode = 429; retryAfter = $RateLimitRetryAfter; detail = "일시적 429/rate limit" }
-      }
-    }
-
-    if (([DateTime]::UtcNow - $LastActivityAt).TotalSeconds -ge $IdleLimitSeconds) {
-      Stop-FixUpAttemptTree $Attempt.Id
-      Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
-      return [pscustomobject]@{ classification = "stall"; exitCode = -1; retryAfter = $null; detail = "transcript/output 활동 ${stallSeconds}초 정지" }
-    }
   }
 
   try { $Attempt.WaitForExit() } catch {}
   $Code = -1
   try { $Code = [int]$Attempt.ExitCode } catch {}
   $Text = Get-AttemptText $StdoutFile $StderrFile
+  $PostFailure = Get-VerificationPostFailure
+  if ($null -ne $PostFailure) {
+    return [pscustomobject]@{ classification = "verification_post_failure"; exitCode = 409; retryAfter = $null; detail = [string]$PostFailure }
+  }
   $Job = $null
   try { $Job = Get-FixUpJobStatus } catch {}
   $Classification = Get-FailureClassification $Text $Code
   $RetryAfter = if ($Classification -eq "rate_limit") { Get-RetryAfterSeconds $Text } else { $null }
   $Detail = if ($null -ne $Job -and $Job.status -eq "failed" -and $Job.failureMessage) {
     [string]$Job.failureMessage
+  } elseif ($Classification -eq "quota" -and $Text -match '(?i)OpenRouter free daily request limit exhausted') {
+    "OpenRouter 무료 모델 일일 요청 한도 소진 · 오늘은 자동 건너뜀"
   } elseif ($Classification -eq "quota") {
     "명확한 무료 사용량/quota/credit 소진 응답"
   } elseif ($Classification -eq "rate_limit") {
@@ -344,16 +396,18 @@ function Invoke-OpenCodeAttempt([string]$Model, [int]$Sequence) {
     "request/schema/context/tool/program 오류"
   } elseif ($Classification -eq "provider_unavailable") {
     "provider 5xx/일시 장애"
+  } elseif ($Classification -eq "browser_unavailable") {
+    "playwright_b/Profile 3 로컬 브라우저 또는 MCP 실행 실패"
   } elseif ($Classification -eq "incomplete") {
-    "OpenCode 정상 종료지만 job 미완료"
+    "결과 제출 없이 실행 종료; 로컬 prompt/tool/result 오류 확인 필요 (fallback 금지)"
   } else {
-    "OpenCode 종료 코드 $Code"
+    $LocalDetail = @($Text -split [Environment]::NewLine | Where-Object { $_ -match "^Local execution failure:" } | Select-Object -Last 1)
+    "$Classification · exit=$Code · $LocalDetail"
   }
 
   if ($null -ne $Job -and $Job.status -eq "completed") { $Classification = "completed"; $Detail = "job completed" }
   elseif ($null -ne $Job -and $Job.status -eq "failed") { $Classification = "job_failed" }
 
-  Remove-Item -LiteralPath $StdoutFile,$StderrFile -Force -ErrorAction SilentlyContinue
   return [pscustomobject]@{ classification = $Classification; exitCode = $Code; retryAfter = $RetryAfter; detail = $Detail }
 }
 
@@ -362,8 +416,11 @@ try {
   if (-not (Test-Path -LiteralPath $PromptFile)) { throw "FixUp Scout 프롬프트 파일을 찾을 수 없습니다." }
   if ((Get-Item -LiteralPath $PromptFile).Length -le 0) { throw "FixUp Scout 프롬프트가 비어 있습니다." }
 
+  Write-Heartbeat
   [IO.File]::WriteAllText($InvokedFile, "invoked", $Utf8)
   [IO.File]::WriteAllText($AttemptLogFile, "", $Utf8)
+
+  Ensure-PlaywrightBChrome
 
   $Version = "unknown"
   try { $Version = [string]((& $OpenCode --version 2>$null | Select-Object -First 1)) } catch {}
@@ -374,6 +431,7 @@ try {
 
   $Sequence = 0
   $FinalFailure = $null
+  $AttemptFailures = New-Object 'System.Collections.Generic.List[string]'
 
   for ($Index = 0; $Index -lt $ModelChain.Count; $Index++) {
     $Model = [string]$ModelChain[$Index]
@@ -388,7 +446,28 @@ try {
     $Result = Invoke-OpenCodeAttempt $Model $Sequence
     if ($Result.classification -eq "completed") {
       Write-AttemptEvent $Model "completed" $false "동일 job 완료"
+      Write-DiagnosticEvent $Model "completed" $false 0 "동일 job 완료"
       break
+    }
+
+    if ($Result.classification -eq "browser_unavailable") {
+      Write-AttemptEvent $Model "browser_unavailable" $false "shared browser/MCP preflight failed; reinitialize same model once"
+      Write-DiagnosticEvent $Model "browser_unavailable" $false ([int]$Result.exitCode) "shared browser/MCP preflight failed; reinitialize same model once"
+      Write-Host "[FixUp Scout] browser recovery -> reinitialize playwright_b/Profile 3 and retry the same model once" -ForegroundColor Yellow
+      Ensure-PlaywrightBChrome
+      Start-Sleep -Seconds 2
+      $Sequence += 1
+      $Result = Invoke-OpenCodeAttempt $Model $Sequence
+      if ($Result.classification -eq "completed") {
+        Write-AttemptEvent $Model "completed" $false "job completed after browser recovery"
+        Write-DiagnosticEvent $Model "completed" $false 0 "job completed after browser recovery"
+        break
+      }
+      if ($Result.classification -eq "browser_unavailable") {
+        Write-AttemptEvent $Model "browser_unavailable" $false "shared browser/MCP still unavailable after recovery"
+        Write-DiagnosticEvent $Model "browser_unavailable" $false ([int]$Result.exitCode) "shared browser/MCP still unavailable after recovery"
+        throw "$Model ? shared playwright_b/Profile 3 browser/MCP recovery failed"
+      }
     }
 
     if ($Result.classification -eq "rate_limit" -and $null -ne $Result.retryAfter -and [int]$Result.retryAfter -gt 0 -and [int]$Result.retryAfter -le $MaxRetryAfterSeconds) {
@@ -397,13 +476,16 @@ try {
       $Result = Invoke-OpenCodeAttempt $Model $Sequence
       if ($Result.classification -eq "completed") {
         Write-AttemptEvent $Model "completed" $false "짧은 429 재시도 후 동일 job 완료"
+        Write-DiagnosticEvent $Model "completed" $false 0 "짧은 429 재시도 후 동일 job 완료"
         break
       }
     }
 
-    $Retryable = @("quota", "rate_limit", "stall", "provider_unavailable") -contains [string]$Result.classification
+    $Retryable = @("quota", "rate_limit", "provider_unavailable", "tool_execution") -contains [string]$Result.classification
     $HasFallback = $Retryable -and ($Index + 1 -lt $ModelChain.Count)
     Write-AttemptEvent $Model ([string]$Result.classification) $HasFallback ([string]$Result.detail)
+    Write-DiagnosticEvent $Model ([string]$Result.classification) $HasFallback ([int]$Result.exitCode) ([string]$Result.detail)
+    [void]$AttemptFailures.Add((Get-AttemptSummary $Model ([string]$Result.classification) ([string]$Result.detail)))
 
     if (-not $Retryable) {
       throw "$Model · $($Result.detail)"
@@ -415,7 +497,8 @@ try {
       continue
     }
 
-    $FinalFailure = "$Model · $($Result.detail)"
+    $Trace = [string]::Join(" → ", [string[]]$AttemptFailures)
+    $FinalFailure = if ([string]::IsNullOrWhiteSpace($Trace)) { "$Model · $($Result.detail)" } else { "fallback 전체 실패 · $Trace" }
   }
 
   $Job = Get-FixUpJobStatus
@@ -429,6 +512,7 @@ try {
   Write-Host ""
   Write-Host "[FixUp Scout] 완료 · $($Job.processedCount)/$($Job.totalCount) 결과 저장 확인" -ForegroundColor Green
   Write-Host "이 창은 자동으로 닫히지 않습니다." -ForegroundColor Yellow
+  Remove-Item -LiteralPath $HeartbeatFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $PromptFile -ErrorAction SilentlyContinue
   Read-Host "창을 닫으려면 Enter"
   exit 0
@@ -440,6 +524,7 @@ catch {
     if ($Current.status -eq "pending") { $null = Set-FixUpJobFailed $FailureMessage }
   } catch {}
   try { [IO.File]::WriteAllText($FailedFile, $FailureMessage, $Utf8) } catch {}
+  Remove-Item -LiteralPath $HeartbeatFile -ErrorAction SilentlyContinue
   Write-Host ""
   Write-Host "[FixUp Scout] 실행 실패: $FailureMessage" -ForegroundColor Red
   Write-Host "이미 POST 성공한 결과는 Scout에 보존됩니다." -ForegroundColor Yellow
@@ -478,26 +563,55 @@ catch {
 
   await waitForOpenCodeInvocation(invokedPath, failedPath);
   await rm(invokedPath, { force: true });
-  await launchExitWatcher({ processId, jobId: input.jobId, watcherPath });
+  await launchExitWatcher({
+    processId,
+    jobId: input.jobId,
+    jobKind: input.mode,
+    watcherPath,
+    watcherLogPath,
+    failedPath,
+    openCodeLogPath,
+  });
 
   return { command, promptPath, processId, modelChain };
 }
 
-async function launchExitWatcher(input: { processId: number; jobId: string; watcherPath: string }) {
+async function launchExitWatcher(input: {
+  processId: number;
+  jobId: string;
+  jobKind: "duplicate" | "verification";
+  watcherPath: string;
+  watcherLogPath: string;
+  failedPath: string;
+  openCodeLogPath: string;
+}) {
   const watcher = `$ErrorActionPreference = "SilentlyContinue"
 $TargetPid = ${input.processId}
 $JobId = ${psQuote(input.jobId)}
+$JobKind = ${psQuote(input.jobKind)}
 $JobUrl = "http://localhost:3000/api/automation/job?jobId=$JobId"
+$FailedFile = ${psQuote(input.failedPath)}
+$AttemptLogFile = ${psQuote(input.openCodeLogPath)}
+$WatcherLogFile = ${psQuote(input.watcherLogPath)}
 
 function Get-FixUpJobStatus {
   try { return Invoke-RestMethod -Uri $JobUrl -Method GET -TimeoutSec 10 } catch { return $null }
 }
 
 function Set-FixUpJobFailed([string]$Message) {
-  try {
-    $Body = @{ jobId = $JobId; error = $Message } | ConvertTo-Json -Compress
-    Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10 | Out-Null
-  } catch {}
+  $LastError = ""
+  for ($Attempt = 1; $Attempt -le 5; $Attempt++) {
+    try {
+      $Body = @{ jobId = $JobId; error = $Message } | ConvertTo-Json -Compress
+      Invoke-RestMethod -Uri "http://localhost:3000/api/automation/job" -Method POST -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -TimeoutSec 10 | Out-Null
+      return $true
+    } catch {
+      $LastError = $_.Exception.Message
+      if ($Attempt -lt 5) { Start-Sleep -Seconds 2 }
+    }
+  }
+  try { Add-Content -LiteralPath $WatcherLogFile -Value ([Environment]::NewLine + "$(Get-Date -Format o) failure-status POST failed after 5 attempts: $LastError") -Encoding UTF8 } catch {}
+  return $false
 }
 
 while ($null -ne (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) {
@@ -509,7 +623,29 @@ while ($null -ne (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) {
 Start-Sleep -Seconds 2
 $Job = Get-FixUpJobStatus
 if ($null -ne $Job -and $Job.status -eq "pending") {
-  Set-FixUpJobFailed "OpenCode fallback 실행 창이 예기치 않게 종료되었습니다."
+  $RecordedFailure = ""
+  try { if (Test-Path -LiteralPath $FailedFile) { $RecordedFailure = (Get-Content -LiteralPath $FailedFile -Raw).Trim() } } catch {}
+  $LastAttempt = ""
+  try { if (Test-Path -LiteralPath $AttemptLogFile) { $LastAttempt = [string](Get-Content -LiteralPath $AttemptLogFile -Tail 1) } } catch {}
+  $Message = if (-not [string]::IsNullOrWhiteSpace($RecordedFailure)) {
+    $RecordedFailure
+  } elseif (-not [string]::IsNullOrWhiteSpace($LastAttempt)) {
+    "OpenCode 제어 PowerShell(PID $TargetPid)이 종료되어 fallback을 계속할 수 없습니다. 마지막 기록: $LastAttempt"
+  } else {
+    "OpenCode 제어 PowerShell(PID $TargetPid)이 종료 기록 없이 사라져 fallback을 계속할 수 없습니다."
+  }
+  $Progress = "$($Job.processedCount)/$($Job.totalCount)"
+  $Model = "unknown"
+  $Provider = "unknown"
+  $Match = [regex]::Match($LastAttempt, "model=(\S+)")
+  if ($Match.Success) { $Model = $Match.Groups[1].Value }
+  $ProviderMatch = [regex]::Match($LastAttempt, "provider=(\S+)")
+  if ($ProviderMatch.Success) { $Provider = $ProviderMatch.Groups[1].Value }
+  $SafeMessage = ($Message -replace "[\t\r\n ]+", " ").Trim()
+  if ($SafeMessage.Length -gt 320) { $SafeMessage = $SafeMessage.Substring(0, 320) }
+  $Diag = "[FixUp Scout][diag] timestamp=$([DateTime]::UtcNow.ToString('o')) jobId=$JobId jobKind=$JobKind progress=$Progress model=$Model provider=$Provider classification=control_process_lost fallback=False processExitCode=unknown wrapperExitCode=unknown httpStatus=GET_OK browserMcp=unknown raw=$SafeMessage"
+  try { [IO.File]::WriteAllText($WatcherLogFile, $Diag, (New-Object System.Text.UTF8Encoding($false))); [IO.File]::AppendAllText($AttemptLogFile, $Diag + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  Set-FixUpJobFailed $Message
 }
 `;
 
@@ -561,10 +697,6 @@ async function readTextIfPresent(filePath: string) {
   } catch {
     return null;
   }
-}
-
-function getEnvModel(name: string, fallback: string) {
-  return process.env[name]?.trim() || fallback;
 }
 
 function getBoundedInteger(name: string, fallback: number, min: number, max: number) {
