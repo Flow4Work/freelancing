@@ -1,42 +1,12 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { applyInstagramVerificationResults } from "@/lib/supabase/verification";
+import { verificationPayloadSchema } from "@/lib/verification/result-contract";
 import { assertVerificationJob, recordVerificationJobProgress } from "@/lib/supabase/verification-jobs";
 
 export const runtime = "nodejs";
 
-const reelSchema = z.object({
-  url: z.string().max(500).nullable(),
-  postedAt: z.string().max(64).nullable(),
-  views: z.number().int().nonnegative().nullable(),
-});
-
-const resultSchema = z.object({
-  handle: z.string().min(1).max(30),
-  duplicateStatus: z.enum(["available", "duplicate", "protected", "unknown"]),
-  duplicateMessage: z.string().max(500).nullable(),
-  exists: z.boolean().nullable(),
-  isPrivate: z.boolean().nullable(),
-  isPersonalCreator: z.boolean().nullable(),
-  bio: z.string().max(2000).nullable(),
-  followers: z.number().int().nonnegative().nullable(),
-  recentActivity: z.boolean().nullable(),
-  lastActivityAt: z.string().max(64).nullable(),
-  japaneseTarget: z.boolean().nullable(),
-  koreaConnection: z.boolean().nullable(),
-  categoryRelevant: z.boolean().nullable(),
-  reels: z.array(reelSchema).max(8),
-  note: z.string().max(500).nullable(),
-});
-
-const bodySchema = z.object({
-  jobId: z.string().uuid(),
-  category: z.enum(["beauty", "food"]),
-  results: z.array(resultSchema).min(1).max(30),
-});
-
 export async function POST(request: Request) {
-  const parsed = bodySchema.safeParse(await request.json().catch(() => null));
+  const parsed = verificationPayloadSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "검증 결과 JSON 형식이 올바르지 않습니다.", details: parsed.error.issues }, { status: 400 });
   }
