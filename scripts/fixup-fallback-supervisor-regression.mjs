@@ -17,6 +17,74 @@ assert.match(wrapper, /Provider unavailable: no semantic tool\/text progress[\s\
 assert.match(wrapper, /Local execution failure: no stdout\/stderr activity[\s\S]*?exit 180/, "non-provider local inactivity must remain local_execution/180");
 assert.ok(launcher.includes("shared browser/MCP preflight failed; reinitialize same model once"), "same-model browser recovery missing");
 assert.ok(launcher.includes("shared browser/MCP still unavailable after recovery"), "terminal shared-browser recovery guard missing");
+assert.match(wrapper, /OpenCode''s free tier can only be used from within OpenCode/, "OpenCode free-tier 403 restriction must be classified as provider_unavailable");
+assert.ok(launcher.includes("OpenCode free-tier automation access rejected (403)"), "launcher must preserve the real OpenCode free-tier 403 reason");
+assert.ok(launcher.includes("provider_unavailable") && retryable.has("provider_unavailable"), "provider restriction must continue to the next fallback model");
+assert.ok(launcher.includes("browser_snapshot({})") && launcher.includes("두 번째 stale ref/actionability timeout"), "verification prompt must require bounded fresh-snapshot recovery");
+
+function extractPsFunction(source, name, nextName) {
+  const start = source.indexOf(`function ${name}`);
+  const end = source.indexOf(`function ${nextName}`, start);
+  assert.ok(start >= 0 && end > start, `PowerShell function ${name} not found`);
+  return source.slice(start, end);
+}
+
+function runPowerShell(source) {
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  return spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-EncodedCommand", encoded], { encoding: "utf8" });
+}
+
+const providerFn = extractPsFunction(wrapper, "Test-ProviderUnavailable", "Test-ProviderRateLimit");
+const providerProbe = runPowerShell(`${providerFn}
+if (Test-ProviderUnavailable "AI_APICallError: Error from provider (Console): OpenCode's free tier can only be used from within OpenCode") { Write-Output "provider_unavailable" } else { Write-Output "other" }`);
+assert.equal(providerProbe.status, 0, providerProbe.stderr);
+assert.match(providerProbe.stdout, /provider_unavailable/, "OpenCode 403 restriction must be retryable provider_unavailable");
+
+const recoverableFn = extractPsFunction(wrapper, "Test-RecoverableBrowserToolFailure", "Get-OpenCodeErrorSignal");
+const signalFn = extractPsFunction(wrapper, "Get-OpenCodeErrorSignal", "Test-LocalBrowserRuntimeFailure");
+const staleEvent = JSON.stringify({
+  type: "tool_use",
+  part: {
+    tool: "playwright_b_browser_snapshot",
+    state: {
+      status: "error",
+      error: "### Error\\nError: Ref f1e150 not found in the current page snapshot. Try capturing new snapshot.",
+      output: "",
+    },
+  },
+});
+const staleEvent2 = JSON.stringify({
+  type: "tool_use",
+  part: {
+    tool: "playwright_b_browser_click",
+    state: {
+      status: "error",
+      error: "### Error\\nError: Ref f13e142 not found in the current page snapshot. Try capturing new snapshot.",
+      output: "",
+    },
+  },
+});
+const oneStale = Buffer.from(staleEvent, "utf8").toString("base64");
+const twoStale = Buffer.from(`${staleEvent}\n${staleEvent2}`, "utf8").toString("base64");
+const recoveryProbe = runPowerShell(`${recoverableFn}
+${signalFn}
+$env:FIXUP_SCOUT_AGENT = 'fixup-verification'
+$one = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${oneStale}'))
+$two = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${twoStale}'))
+$clickDetail = "TimeoutError: browserBackend.callTool: Timeout 5000ms exceeded. - waiting for locator('aria-ref=f10e331') - locator resolved to <a role='link'>x</a> - attempting click action - waiting for element to be visible, enabled and stable"
+Write-Output ('CLICK=' + (Test-RecoverableBrowserToolFailure 'playwright_b_browser_click' $clickDetail))
+Write-Output ('ONE=' + (Get-OpenCodeErrorSignal $one ''))
+Write-Output ('TWO=' + (Get-OpenCodeErrorSignal $two ''))
+`);
+assert.equal(recoveryProbe.status, 0, recoveryProbe.stderr);
+const clickLine = recoveryProbe.stdout.split(/\r?\n/).find((line) => line.startsWith("CLICK=")) ?? "";
+const oneLine = recoveryProbe.stdout.split(/\r?\n/).find((line) => line.startsWith("ONE=")) ?? "";
+const twoStart = recoveryProbe.stdout.indexOf("TWO=");
+const twoBlock = twoStart >= 0 ? recoveryProbe.stdout.slice(twoStart) : "";
+assert.match(clickLine, /CLICK=True/i, "verification click actionability timeout must be recoverable once");
+assert.match(oneLine, /FIXUP_RECOVERABLE_browser_tool/, "first stale ref must remain inside the same verification attempt");
+assert.doesNotMatch(oneLine, /FIXUP_LOCAL_tool_execution/, "first stale ref must not immediately kill the attempt");
+assert.match(twoBlock, /FIXUP_LOCAL_tool_execution/, "second recoverable browser failure must terminate the attempt for fallback");
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fixup-fallback-regression-"));
 const marker = path.join(dir, "attempts.log");

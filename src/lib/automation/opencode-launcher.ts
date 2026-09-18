@@ -73,7 +73,7 @@ export async function launchOpenCodeJob(input: { prompt: string; jobId: string; 
   const duplicateResumeInstruction = `\n- The launcher resolves the job terminal state. Candidate-level resume is owned only by the Apps Script origin localStorage checkpoint described in the task prompt.\n- Never call /api/automation/job, verification/results GET, /health, or any status endpoint yourself.\n- A valid checkpoint result or inFlight recovery must never be re-clicked; continue only from the first unfinished checkpoint entry.`;
   const reliabilityInstruction = duplicateJob
     ? `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 중복 확인이다. FixUp 전원 판정 → 전원 결과 정확히 1회 batch POST → completed:true 확인 순서만 실행한다.\n- Instagram은 절대 열지 않는다. followers/BIO/Reels/게시물/DM은 최종 검증 단계에서만 확인한다.\n- 후보별 POST, 1차/2차 분할 POST, available 별도 후처리를 하지 않는다.\n- 본문의 단일 async browser_evaluate DOM loop를 사용한다. 후보별 fill/find/snapshot/click/wait tool round-trip으로 되돌아가지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 현재 browser form/checkpoint를 먼저 확인하고, form이 없을 때만 본문의 FixUp 중복 페이지로 이동한다.\n- playwright_b 호출이 spawn/연결/timeout/MCP 오류로 실패하면 agent-browser, 다른 브라우저, webfetch, curl/Invoke-WebRequest, 직접 HTTP, 패키지 설치로 우회하지 않는다. 결과를 추정하거나 POST하지 말고 즉시 종료한다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실제 호출 후 응답 유실/실패 시 임의 재전송하지 않고 attempt를 종료한다. launcher가 job 상태를 다시 확인한다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${duplicateResumeInstruction}`
-    : `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 Instagram 최종 검증이다. 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 첫 후보 Instagram 프로필로 이동한다.\n- playwright_b 호출이 spawn/연결/timeout/MCP 오류로 실패하면 agent-browser, 다른 브라우저, webfetch, curl/Invoke-WebRequest, 직접 HTTP, 패키지 설치로 우회하지 않는다. 결과를 추정하거나 POST하지 말고 즉시 종료한다.\n- /reels/ 로딩 실패 시 짧게 대기 → 최신 snapshot → 필요하면 같은 /reels/ 1회 재이동 또는 reload까지만 허용한다. 그래도 조회수를 읽지 못하면 reels:[]와 확인 불가 사유를 note에 넣어 즉시 POST하고 다음 후보로 간다.\n- Reels 실패 때문에 network/GraphQL/request body 분석, HTML dump 반복, 다른 후보 Reels 페이지 재방문을 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${resumeInstruction}`;
+    : `\n\n[최우선 실행/저장 안정성]\n- 이 작업은 Instagram 최종 검증이다. 후보 1명 처리가 끝날 때마다 해당 1건을 즉시 localhost 결과 API에 POST하고 ok:true를 확인한 뒤 다음 후보로 간다.\n- 전체 후보를 끝낸 뒤 한 번에 제출하지 않는다.\n- 시작 전에 verification/results GET, 임의 /health 호출, node/port 전수 조사, API route/code 탐색을 하지 않는다. OpenCode가 시작되면 바로 첫 후보 Instagram 프로필로 이동한다.\n- playwright_b 호출이 spawn/연결/MCP 자체 오류로 실패하면 agent-browser, 다른 브라우저, webfetch, curl/Invoke-WebRequest, 직접 HTTP, 패키지 설치로 우회하지 않는다. 결과를 추정하거나 POST하지 말고 즉시 종료한다.\n- 단, 최종 검증에서 첫 stale ref(Ref ... not found) 또는 현재 ref click actionability 5초 timeout은 복구 가능한 도구 오류다. 그 즉시 browser_snapshot({})을 target 없이 새로 1회 받아 현재 페이지의 최신 ref만 사용해 같은 읽기/클릭을 정확히 1회 재시도한다.\n- 같은 attempt에서 두 번째 stale ref/actionability timeout이 나거나 fresh snapshot 재시도도 실패하면 더 반복하지 말고 attempt를 종료해 supervisor fallback에 맡긴다. browser_snapshot에는 절대 target/ref를 전달하지 않는다.\n- /reels/ 로딩 실패 시 짧게 대기 → 최신 snapshot → 필요하면 같은 /reels/ 1회 재이동 또는 reload까지만 허용한다. 그래도 조회수를 읽지 못하면 reels:[]와 확인 불가 사유를 note에 넣어 즉시 POST하고 다음 후보로 간다.\n- Reels 실패 때문에 network/GraphQL/request body 분석, HTML dump 반복, 다른 후보 Reels 페이지 재방문을 하지 않는다.\n- Python/py/python3, Temp 결과파일, pathlib, --data-binary @파일경로를 사용하지 않는다.\n- POST 실패 시 즉시 실패 종료한다. 이미 POST 성공한 후보를 다시 처리하지 않는다.\n- 마지막 POST 응답 completed:true를 확인해야만 전체 완료다.${resumeInstruction}`;
 
   await writeFile(promptPath, `${input.prompt}${reliabilityInstruction}`, { encoding: "utf8" });
 
@@ -181,6 +181,7 @@ function Get-AttemptSummary([string]$Model, [string]$Classification, [string]$De
   $Reason = if ($Classification -eq "quota" -and $Detail -match "OpenRouter") { "OpenRouter 일일한도" }
     elseif ($Classification -eq "quota") { "quota" }
     elseif ($Classification -eq "rate_limit") { "429" }
+    elseif ($Classification -eq "provider_unavailable" -and $Detail -match "free-tier automation access rejected") { "403/free-tier 제한" }
     elseif ($Classification -eq "provider_unavailable") { "5xx/일시장애" }
     elseif ($Classification -eq "browser_unavailable") { "브라우저/MCP" }
     elseif ($Classification -eq "tool_execution") { "브라우저/도구실행" }
@@ -246,7 +247,7 @@ function Test-TransientRateLimit([string]$Text) {
 }
 function Test-ProviderUnavailable([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  return $Text -match '(?i)(\\b50[0234]\\b|service unavailable|temporarily unavailable|provider unavailable|upstream(?:\\s+\\w+){0,3}\\s+(?:timeout|unavailable)|overloaded|connection (?:reset|refused)|ECONNRESET|ETIMEDOUT|model(?:\\s+\\w+){0,4}\\s+(?:not found|unavailable|unsupported)|unknown model|modelnotfound)'
+  return $Text -match '(?i)(\\b50[0234]\\b|service unavailable|temporarily unavailable|provider unavailable|upstream(?:\\s+\\w+){0,3}\\s+(?:timeout|unavailable)|overloaded|connection (?:reset|refused)|ECONNRESET|ETIMEDOUT|model(?:\\s+\\w+){0,4}\\s+(?:not found|unavailable|unsupported)|unknown model|modelnotfound|OpenCode''s free tier can only be used from within OpenCode)'
 }
 function Get-RetryAfterSeconds([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
@@ -280,6 +281,11 @@ function Get-FailureClassification([string]$Text, [int]$ExitCode) {
   if ($Text -match 'FIXUP_LOCAL_post_failure' -or $ExitCode -eq 178) { return "post_failure" }
   if ($Text -match 'FIXUP_LOCAL_browser_unavailable' -or $ExitCode -eq 176) { return "browser_unavailable" }
   if ($Text -match 'FIXUP_LOCAL_tool_execution' -or $ExitCode -eq 179) { return "tool_execution" }
+  if (Test-QuotaExhaustion $Text) { return "quota" }
+  if (Test-TransientRateLimit $Text) { return "rate_limit" }
+  if (Test-ProviderUnavailable $Text) { return "provider_unavailable" }
+  if (Test-AuthFailure $Text) { return "auth" }
+  if (Test-NonFallbackProgramFailure $Text) { return "request_or_program" }
   if ($ExitCode -eq 180) { return "local_execution" }
   if ($ExitCode -eq 173 -or $ExitCode -eq 174) { return "quota" }
   if ($ExitCode -eq 175) { return "provider_unavailable" }
@@ -394,6 +400,8 @@ function Invoke-OpenCodeAttempt([string]$Model, [int]$Sequence) {
     "API key/auth 오류"
   } elseif ($Classification -eq "request_or_program") {
     "request/schema/context/tool/program 오류"
+  } elseif ($Classification -eq "provider_unavailable" -and $Text -match '(?i)OpenCode''s free tier can only be used from within OpenCode') {
+    "OpenCode free-tier automation access rejected (403): can only be used from within OpenCode"
   } elseif ($Classification -eq "provider_unavailable") {
     "provider 5xx/일시 장애"
   } elseif ($Classification -eq "browser_unavailable") {

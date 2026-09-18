@@ -175,7 +175,7 @@ const actionabilityFixture = `TimeoutError: browserBackend.callTool: Timeout 500
  - waiting for element to be visible, enabled and stable`;
 assert.match(actionabilityFixture, /TimeoutError: browserBackend\.callTool: Timeout 5000ms exceeded.*locator resolved to.*attempting click action.*waiting for element to be visible, enabled and stable/is);
 passed.push("dm-sync click actionability fixture");
-for (const needle of ["Test-DmRecoverableClickFailure", "FIXUP_SCOUT_AGENT -notin @('fixup-dm','fixup-dm-sync')", "playwright_b_browser_click", "Timeout 5000ms exceeded", "visible, enabled and stable"]) {
+for (const needle of ["Test-RecoverableBrowserToolFailure", "fixup-dm-sync", "fixup-dm", "fixup-verification", "playwright_b_browser_click", "Timeout 5000ms exceeded", "not found in the current page snapshot", "FIXUP_RECOVERABLE_browser_tool"]) {
   assert.ok(wrapper.includes(needle), `wrapper recoverable actionability guard missing: ${needle}`);
   passed.push(`wrapper actionability ${needle}`);
 }

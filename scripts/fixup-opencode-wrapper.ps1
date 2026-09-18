@@ -110,17 +110,21 @@ function Get-ProviderName([string]$Model) {
     return $Model.Substring(0, $Slash).ToLowerInvariant()
 }
 
-function Test-DmRecoverableClickFailure([string]$Tool, [string]$Detail) {
-    if ($env:FIXUP_SCOUT_AGENT -notin @('fixup-dm','fixup-dm-sync')) { return $false }
-    if ($Tool -ne 'playwright_b_browser_click') { return $false }
-    $Actionability = $Detail -match '(?is)TimeoutError: browserBackend\.callTool: Timeout 5000ms exceeded.*locator resolved to.*attempting click action.*waiting for element to be visible, enabled and stable'
-    if ($env:FIXUP_SCOUT_AGENT -eq 'fixup-dm-sync') { return $Actionability }
-    return $Actionability -or $Detail -match '(?is)(Ref\s+(?:f\d+)?e\d+\s+not found in the current page snapshot|FIXUP_REF_GUARD raw snapshot ref .* is not proven|element.*(?:detached|not attached))'
+function Test-RecoverableBrowserToolFailure([string]$Tool, [string]$Detail) {
+    $Agent = [string]$env:FIXUP_SCOUT_AGENT
+    $StaleRef = $Detail -match '(?is)(Ref\s+(?:f\d+)?e\d+\s+not found in the current page snapshot|FIXUP_REF_GUARD raw snapshot ref .* is not proven|element.*(?:detached|not attached))'
+    $ClickActionability = $Tool -eq 'playwright_b_browser_click' -and $Detail -match '(?is)TimeoutError: browserBackend\.callTool: Timeout 5000ms exceeded.*(?:locator resolved to|waiting for locator\(''aria-ref=).*?(?:attempting click action|waiting for element to be visible, enabled and stable)'
+
+    if ($Agent -eq 'fixup-dm-sync') { return $ClickActionability }
+    if ($Agent -eq 'fixup-dm') { return $ClickActionability -or $StaleRef }
+    if ($Agent -eq 'fixup-verification') { return $ClickActionability -or $StaleRef }
+    return $false
 }
 
 function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
     $Parts = New-Object 'System.Collections.Generic.List[string]'
     $BrowserToolCompleted = $false
+    $RecoverableBrowserFailureCount = 0
     foreach ($Line in ($StderrText -split "`r?`n")) {
         if ($Line -match '(?i)(level=ERROR|^(?:Free usage exceeded|Quota exceeded|Provider unavailable|OpenRouter free daily|Local execution failure))') { [void]$Parts.Add($Line) }
     }
@@ -133,7 +137,13 @@ function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
             if ($Tool -like 'playwright_b_*' -and $State.status -eq 'completed') { $BrowserToolCompleted = $true }
             if ($State.status -eq 'error' -or [string]$State.output -match '^### Error') {
                 $Detail = [string]$State.error + ' ' + [string]$State.output
-                if (Test-DmRecoverableClickFailure $Tool $Detail) { continue }
+                if (Test-RecoverableBrowserToolFailure $Tool $Detail) {
+                    $RecoverableBrowserFailureCount += 1
+                    if ($RecoverableBrowserFailureCount -le 1) {
+                        [void]$Parts.Add("FIXUP_RECOVERABLE_browser_tool tool=$Tool $Detail")
+                        continue
+                    }
+                }
                 $SharedBrowserFailure = $Detail -match '(?i)(spawn|connection|\bNot connected\b|Extension not connected|MCP\s+(?:connection|server|transport|unavailable|failed)|browser.*launch)'
                 $BareMcpRequestTimeout = $Detail -match '(?i)MCP error\s+-32001:\s*Request timed out'
                 $Kind = if ($Detail -match '(?i)(FIXUP_PERMISSION_DENIED|prevents you from using|permission.*den|rejected permission)') { 'permission_denied' }
@@ -200,7 +210,7 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
 
 function Test-ProviderUnavailable([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return $Text -match '(?i)(\b50[0234]\b|service unavailable|provider unavailable|upstream request failed|overloaded)'
+    return $Text -match '(?i)(\b50[0234]\b|service unavailable|provider unavailable|upstream request failed|overloaded|OpenCode''s free tier can only be used from within OpenCode)'
 }
 
 function Test-ProviderRateLimit([string]$Text) {
@@ -424,7 +434,11 @@ try {
 
         if (Test-ProviderUnavailable $SignalText) {
             Stop-OwnChildTree $Child.Id
-            [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
+            if ($SignalText -match '(?i)OpenCode''s free tier can only be used from within OpenCode') {
+                [Console]::Error.WriteLine("Provider unavailable: OpenCode free-tier automation access rejected (403) for $Model.")
+            } else {
+                [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
+            }
             exit 175
         }
 
@@ -500,12 +514,21 @@ try {
     }
 
     if (Test-ProviderUnavailable $SignalText) {
-        [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
+        if ($SignalText -match '(?i)OpenCode''s free tier can only be used from within OpenCode') {
+            [Console]::Error.WriteLine("Provider unavailable: OpenCode free-tier automation access rejected (403) for $Model.")
+        } else {
+            [Console]::Error.WriteLine("Provider unavailable: upstream/capacity/protocol failure for $Model.")
+        }
         exit 175
     }
 
     $ExitCode = 1
     try { $ExitCode = [int]$Child.ExitCode } catch {}
+
+    if ($SignalText -match 'FIXUP_RECOVERABLE_browser_tool') {
+        [Console]::Error.WriteLine("Local execution failure: FIXUP_LOCAL_tool_execution recoverable browser retry ended before completion for $Model.")
+        exit 179
+    }
 
     exit $ExitCode
 } finally {
