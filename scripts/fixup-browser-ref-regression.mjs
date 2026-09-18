@@ -180,7 +180,7 @@ for (const needle of ["Test-RecoverableBrowserToolFailure", "fixup-dm-sync", "fi
   assert.ok(wrapper.includes(needle), `wrapper recoverable actionability guard missing: ${needle}`);
   passed.push(`wrapper actionability ${needle}`);
 }
-for (const needle of ["take one fresh full snapshot and retry", "Never reuse refs after typing", "retry the exact matching result once", "do not submit uncertain", "Stop the attempt"]) {
+for (const needle of ["take one fresh full snapshot and retry", "Never reuse refs after typing", "nested raw ref whose visible text equals the exact handle", "retry once with that child ref", "do not submit uncertain", "Stop the attempt"]) {
   assert.ok(syncPrompt.includes(needle), `sync prompt bounded recovery missing: ${needle}`);
   passed.push(`sync prompt recovery ${needle}`);
 }

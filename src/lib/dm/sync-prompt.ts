@@ -53,7 +53,7 @@ For each contact, do only this:
 2. Take a fresh full snapshot.
 3. Type the exact handle into the inbox search box using its raw ref from that snapshot.
 4. Take a fresh full snapshot.
-5. Click the exact matching search result using its raw ref from that new snapshot.
+5. In the unique exact matching account result, prefer the raw ref of the nested text node whose visible text is exactly the handle. Click that raw ref. Only if that exact-handle child ref is not exposed, click the result container raw ref.
 6. Take a fresh full snapshot and confirm the exact handle.
 7. Inspect only whether this Instagram conversation contains any message history at all.
 8. If there is no message history, submit not_sent with fixup_result_sync.
@@ -72,8 +72,9 @@ Rules:
 - Never reuse refs after typing, navigation, or opening a conversation.
 - Every browser_snapshot must be a new full snapshot with no target/ref argument.
 - If browser_type or browser_click fails because its raw snapshot ref is stale/not found, take one fresh full snapshot and retry that intended action exactly once with a new raw ref.
-- If an exact search-result click hits the 5-second actionability timeout, take one fresh full snapshot and retry the exact matching result once with its new raw ref.
-- If the retry still fails, or the result is absent/ambiguous, do not guess sent/not_sent and do not submit uncertain. Stop the attempt with that contact and every remaining contact untouched so the supervisor can retry/fallback.
+- Prefer clicking the nested raw ref whose visible text equals the exact handle because Instagram's outer result container can remain actionability-unstable while the handle node is stable.
+- If that exact-handle click hits the 5-second actionability timeout, take one fresh full snapshot. If the refreshed exact result exposes a new exact-handle child ref, retry once with that child ref; otherwise retry once with the exact result container ref.
+- If the retry still fails, or the exact result is absent/ambiguous, do not guess sent/not_sent and do not submit uncertain. Stop the attempt with that contact and every remaining contact untouched so the supervisor can retry/fallback.
 - Any other real playwright_b/MCP failure also stops the attempt and leaves unprocessed contacts untouched.
 - The payload contract for fixup_result_sync is exact:
 
