@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertLocalRequest } from "@/lib/automation/opencode-launcher";
 import { isValidHandle, normalizeHandle } from "@/lib/discovery/instagram";
-import { isConfirmedSentEvidence } from "@/lib/dm/sent-sync";
-import { getDmContact, getLatestDmContactForHandle, markDmContactSentFromSync } from "@/lib/supabase/dm-contacts";
+import { getDmContact, getLatestDmContactForHandle, markDmContactSentFromSync, returnDmContactsToFinalVerification } from "@/lib/supabase/dm-contacts";
 
 export const runtime = "nodejs";
 
@@ -14,15 +13,7 @@ const contactFields = {
 const errorField = z.string().max(300).optional().nullable();
 
 const schema = z.discriminatedUnion("status", [
-  z.object({
-    ...contactFields,
-    status: z.literal("sent"),
-    evidence: z.object({
-      text: z.string().min(1).max(10000),
-      direction: z.literal("outgoing"),
-      currentAttempt: z.literal("yes"),
-    }),
-  }),
+  z.object({ ...contactFields, status: z.literal("sent") }),
   z.object({ ...contactFields, status: z.literal("not_sent"), error: errorField }),
   z.object({ ...contactFields, status: z.literal("uncertain"), error: errorField }),
 ]);
@@ -59,19 +50,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "DM sync contact is stale" }, { status: 409 });
     }
 
-    if (parsed.data.status !== "sent") {
-      return NextResponse.json({ ok: true, changed: false, contact: current });
+    if (parsed.data.status === "not_sent") {
+      const [contact] = await returnDmContactsToFinalVerification(
+        current.category,
+        [parsed.data.contactId],
+        "발송 확인: Instagram 대화 내역 없음",
+      );
+      return NextResponse.json({ ok: true, changed: true, destination: "final_verification", contact });
     }
 
-    if (!isConfirmedSentEvidence(current.japaneseText, [parsed.data.evidence])) {
-      return NextResponse.json({
-        ok: false,
-        error: "DM sync outgoing evidence does not exactly match the latest approved DM",
-      }, { status: 409 });
+    if (parsed.data.status === "uncertain") {
+      return NextResponse.json({ ok: true, changed: false, destination: "send_confirmation", contact: current });
     }
 
     const contact = await markDmContactSentFromSync(parsed.data.contactId, handle);
-    return NextResponse.json({ ok: true, changed: !current.sentAt && Boolean(contact.sentAt), contact });
+    return NextResponse.json({ ok: true, changed: !current.sentAt && Boolean(contact.sentAt), destination: "dm_ready", contact });
   } catch (error) {
     console.error("dm_sent_sync_result_failed", error);
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "DM sent sync result failed" }, { status: 500 });

@@ -12,11 +12,7 @@ const syncHandleSchema = z.string().min(1).max(30)
 const syncContactFields = { contactId: z.string().uuid(), handle: syncHandleSchema };
 const syncErrorField = z.string().max(300).optional().nullable();
 export const syncPayloadSchema = z.discriminatedUnion("status", [
-  z.object({ ...syncContactFields, status: z.literal("sent"), evidence: z.object({
-    text: z.string().min(1).max(10000),
-    direction: z.literal("outgoing"),
-    currentAttempt: z.literal("yes"),
-  }) }),
+  z.object({ ...syncContactFields, status: z.literal("sent") }),
   z.object({ ...syncContactFields, status: z.literal("not_sent"), error: syncErrorField }),
   z.object({ ...syncContactFields, status: z.literal("uncertain"), error: syncErrorField }),
 ]);
@@ -26,10 +22,14 @@ function submit(agent: string, endpoint: string, payloadSchema: z.ZodType = z.re
   return {
     description: "Submit verified FixUp result JSON to this agent's fixed localhost endpoint. Stop on any error.",
     args: { payload: payloadSchema.describe("Complete result payload as a JSON object, exactly as specified in the task") },
-    async execute(args: { payload: Record<string, unknown> }, context: { agent: string }) {
+    async execute(args: { payload: unknown }, context: { agent: string }) {
       if (context.agent !== agent) throw new Error("FIXUP_PERMISSION_DENIED: result endpoint belongs to " + agent);
       try {
-        const parsed = payloadSchema.safeParse(args.payload);
+        let payloadInput = args.payload;
+        if (typeof payloadInput === "string") {
+          try { payloadInput = JSON.parse(payloadInput); } catch {}
+        }
+        const parsed = payloadSchema.safeParse(payloadInput);
         if (!parsed.success) {
           const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "payload"}: ${issue.message}`).join("; ");
           throw new Error("FIXUP_TOOL_VALIDATION_FAILED: " + detail);

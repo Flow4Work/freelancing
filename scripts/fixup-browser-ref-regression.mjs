@@ -161,9 +161,10 @@ passed.push("no verification-only activation");
 const launcher = fs.readFileSync(path.join(process.cwd(), "src/lib/automation/opencode-launcher.ts"), "utf8");
 assert.ok(launcher.includes('return "browser_unavailable"'), "browser_unavailable taxonomy missing");
 assert.ok(launcher.includes('return "tool_execution"'), "tool_execution taxonomy missing");
-assert.ok(launcher.includes('$Retryable = @(\"quota\", \"rate_limit\", \"provider_unavailable\", \"tool_execution\")'), "retryable fallback policy missing tool_execution");
-assert.ok(launcher.includes('shared browser/MCP preflight failed; reinitialize same model once'), "shared browser recovery missing");
-assert.ok(launcher.includes('shared browser/MCP still unavailable after recovery'), "shared browser terminal guard missing");
+assert.ok(launcher.includes('$Retryable = @("quota", "rate_limit", "provider_unavailable", "browser_unavailable", "tool_execution", "incomplete")'), "retryable fallback policy missing browser/tool/incomplete");
+assert.ok(launcher.includes('$SameModelRetryDelay = 10'), "transient provider same-model retry missing");
+assert.ok(launcher.includes('$Result.classification -in @("browser_unavailable", "tool_execution", "incomplete")'), "shared browser/tool bounded retry missing");
+assert.ok(!launcher.includes('shared playwright_b/Profile 3 browser/MCP recovery failed'), "browser recovery still terminates instead of falling back");
 passed.push("browser taxonomy preserved", "tool_execution fallback enabled", "shared browser bounded recovery");
 
 const wrapper = fs.readFileSync(path.join(process.cwd(), "scripts/fixup-opencode-wrapper.ps1"), "utf8");
@@ -179,7 +180,7 @@ for (const needle of ["Test-RecoverableBrowserToolFailure", "fixup-dm-sync", "fi
   assert.ok(wrapper.includes(needle), `wrapper recoverable actionability guard missing: ${needle}`);
   passed.push(`wrapper actionability ${needle}`);
 }
-for (const needle of ["immediately take one fresh full snapshot", "Never reuse the failed ref", "retry the click once only", "submit uncertain", "continue to the next contact"]) {
+for (const needle of ["take one fresh full snapshot and retry", "Never reuse refs after typing", "retry the exact matching result once", "do not submit uncertain", "Stop the attempt"]) {
   assert.ok(syncPrompt.includes(needle), `sync prompt bounded recovery missing: ${needle}`);
   passed.push(`sync prompt recovery ${needle}`);
 }

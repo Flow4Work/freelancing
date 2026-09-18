@@ -1,147 +1,116 @@
 import fs from "node:fs";
 import path from "node:path";
-import ts from "typescript";
-import { createRequire } from "node:module";
 import { loadTsModule } from "./fixup-ts-module-loader.mjs";
 
 const root = process.cwd();
-const require = createRequire(import.meta.url);
 const toolPath = path.join(root, ".opencode", "tools", "fixup_result.ts");
-const toolSource = fs.readFileSync(toolPath, "utf8");
 const { syncPayloadSchema, sync } = loadTsModule(toolPath);
 if (!syncPayloadSchema || !sync?.execute) throw new Error("sync tool exports unavailable");
-const sentSyncPath = path.join(root, "src", "lib", "dm", "sent-sync.ts");
-const sentSyncCompiled = ts.transpileModule(fs.readFileSync(sentSyncPath, "utf8"), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const sentSyncShim = { exports: {} };
-new Function("require", "module", "exports", sentSyncCompiled)(require, sentSyncShim, sentSyncShim.exports);
-const { isConfirmedSentEvidence, normalizeInstagramDmExactText } = sentSyncShim.exports;
-if (!isConfirmedSentEvidence || !normalizeInstagramDmExactText) throw new Error("sent-sync exports unavailable");
 
-const A = { contactId: "fc0f76c4-5d9b-422e-b50c-2d7ff6608bc6", handle: "nagi_30life_", status: "sent", evidence: { text: "test" } };
-const B = { contactId: "fc9a586c-472b-45de-af18-c553a7944942", handle: "ayani0625", status: "sent", evidence: { text: "test" } };
-const validSent = { contactId: B.contactId, handle: B.handle, status: "sent", evidence: { text: "test", direction: "outgoing", currentAttempt: "yes" } };
-const validNotSent = { contactId: "40ec8c61-3b29-40a8-8832-92b6db0104d0", handle: "118mayuyu", status: "not_sent" };
-const validUncertain = { contactId: B.contactId, handle: B.handle, status: "uncertain", error: "cannot confirm current attempt" };
+const promptSource = fs.readFileSync(path.join(root, "src", "lib", "dm", "sync-prompt.ts"), "utf8");
+const serverSource = fs.readFileSync(path.join(root, "src", "app", "api", "dm", "sync-result", "route.ts"), "utf8");
+const contactsSource = fs.readFileSync(path.join(root, "src", "lib", "supabase", "dm-contacts.ts"), "utf8");
+const progressSource = fs.readFileSync(path.join(root, "src", "app", "api", "dm", "sync", "route.ts"), "utf8");
+const launcherSource = fs.readFileSync(path.join(root, "src", "lib", "automation", "opencode-dm-sync-launcher.ts"), "utf8");
+const wrapperSource = fs.readFileSync(path.join(root, "scripts", "fixup-opencode-wrapper.ps1"), "utf8");
+const toolSource = fs.readFileSync(toolPath, "utf8");
 
 const cases = [];
-function expectParse(name, payload, expected) {
-  const actual = syncPayloadSchema.safeParse(payload).success;
-  cases.push([name, actual === expected, actual]);
-}
-expectParse("captured A malformed sent", A, false);
-expectParse("captured B malformed sent", B, false);
-expectParse("valid sent", validSent, true);
-expectParse("valid not_sent", validNotSent, true);
-expectParse("valid uncertain", validUncertain, true);
-expectParse("incoming", { ...validSent, evidence: { ...validSent.evidence, direction: "incoming" } }, false);
-expectParse("unknown direction", { ...validSent, evidence: { ...validSent.evidence, direction: "unknown" } }, false);
-expectParse("currentAttempt=no", { ...validSent, evidence: { ...validSent.evidence, currentAttempt: "no" } }, false);
-expectParse("currentAttempt=unknown", { ...validSent, evidence: { ...validSent.evidence, currentAttempt: "unknown" } }, false);
-expectParse("missing evidence", { contactId: B.contactId, handle: B.handle, status: "sent" }, false);
-expectParse("invalid contactId UUID", { ...validSent, contactId: "not-a-uuid" }, false);
-expectParse("invalid handle", { ...validSent, handle: "bad..handle" }, false);
-expectParse("unknown status is not promoted", { contactId: B.contactId, handle: B.handle, status: "unknown" }, false);
+const check = (name, ok, detail = "") => cases.push([name, Boolean(ok), detail]);
+const A = { contactId: "fc0f76c4-5d9b-422e-b50c-2d7ff6608bc6", handle: "nagi_30life_" };
+const sent = { ...A, status: "sent" };
+const notSent = { ...A, status: "not_sent" };
+const uncertain = { ...A, status: "uncertain", error: "browser unavailable" };
+
+check("sent without legacy evidence parses", syncPayloadSchema.safeParse(sent).success);
+check("not_sent parses", syncPayloadSchema.safeParse(notSent).success);
+check("uncertain remains backward compatible", syncPayloadSchema.safeParse(uncertain).success);
+check("invalid UUID rejected", !syncPayloadSchema.safeParse({ ...sent, contactId: "bad" }).success);
+check("invalid handle rejected", !syncPayloadSchema.safeParse({ ...sent, handle: "bad..handle" }).success);
+check("unknown status rejected", !syncPayloadSchema.safeParse({ ...A, status: "unknown" }).success);
 
 const batch30 = Array.from({ length: 30 }, (_, index) => ({
   contactId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
   handle: `batchtest${index + 1}`,
-  status: "not_sent",
+  status: index % 2 ? "sent" : "not_sent",
 }));
-const batch30Results = batch30.map((payload) => syncPayloadSchema.safeParse(payload).success);
-cases.push(["30-item batch validates 30/30", batch30Results.every(Boolean), batch30Results.filter(Boolean).length]);
-const batchOneInvalid = batch30.map((payload, index) => index === 12
-  ? { ...payload, status: "sent", evidence: { text: "test" } }
-  : payload);
-const batchOneInvalidResults = batchOneInvalid.map((payload) => syncPayloadSchema.safeParse(payload).success);
-cases.push(["30-item batch keeps exactly one invalid", batchOneInvalidResults.filter(Boolean).length === 29 && batchOneInvalidResults[12] === false, batchOneInvalidResults.filter(Boolean).length]);
+check("30-item batch validates", batch30.every((payload) => syncPayloadSchema.safeParse(payload).success));
 
-let fetchCalls = 0;
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async () => { fetchCalls += 1; throw new Error("network must not be reached"); };
-for (const [name, payload] of [["captured A pre-HTTP", A], ["captured B pre-HTTP", B]]) {
-  let blocked = false;
-  let detail = "";
-  try {
-    await sync.execute({ payload }, { agent: "fixup-dm-sync" });
-  } catch (error) {
-    detail = String(error);
-    blocked = detail.includes("FIXUP_TOOL_VALIDATION_FAILED")
-      && detail.includes("evidence.direction")
-      && detail.includes("evidence.currentAttempt");
-  }
-  cases.push([name, blocked && fetchCalls === 0, `blocked=${blocked}, fetchCalls=${fetchCalls}, detail=${detail}`]);
-}
-globalThis.fetch = originalFetch;
-const promptSource = fs.readFileSync(path.join(root, "src", "lib", "dm", "sync-prompt.ts"), "utf8");
-const serverSource = fs.readFileSync(path.join(root, "src", "app", "api", "dm", "sync-result", "route.ts"), "utf8");
-const sentSyncSource = fs.readFileSync(path.join(root, "src", "lib", "dm", "sent-sync.ts"), "utf8");
-const progressSource = fs.readFileSync(path.join(root, "src", "app", "api", "dm", "sync", "route.ts"), "utf8");
-
-for (const needle of ['"direction": "outgoing"', '"currentAttempt": "yes"', 'evidence.text alone is invalid']) {
-  cases.push([`prompt contract ${needle}`, promptSource.includes(needle), promptSource.includes(needle)]);
-}
-for (const needle of ['z.literal("sent")', 'z.literal("not_sent")', 'z.literal("uncertain")', 'direction: z.literal("outgoing")', 'currentAttempt: z.literal("yes")']) {
-  cases.push([`producer/server contract ${needle}`, toolSource.includes(needle) && serverSource.includes(needle), `producer=${toolSource.includes(needle)}, server=${serverSource.includes(needle)}`]);
-}
-for (const needle of ['dm_sent_sync_result_invalid', 'issues: parsed.error.issues.map', 'issue.path.join(".")', 'error: "invalid DM sync result", validation']) {
-  cases.push([`server validation diagnostics ${needle}`, serverSource.includes(needle), serverSource.includes(needle)]);
-}
-for (const needle of ['message.direction === "outgoing"', 'message.currentAttempt === "yes"', 'normalizeInstagramDmExactText(message.text) === approved']) {
-  cases.push([`sent evidence policy ${needle}`, sentSyncSource.includes(needle), sentSyncSource.includes(needle)]);
-}
 for (const needle of [
-  "approvedJapaneseText,",
-  "The newest outgoing message is not automatically the approved DM",
-  "Never use the follow-up itself as sent evidence",
-  "If ambiguous, use uncertain",
-  "An incoming bubble that matches approvedJapaneseText is never sent evidence",
-]) {
-  cases.push([`approved DM prompt policy ${needle}`, promptSource.includes(needle), promptSource.includes(needle)]);
-}
-const approved = "????????????\n????DM???";
-const followup = "?????????????";
-cases.push([
-  "approved exact outgoing can be sent",
-  isConfirmedSentEvidence(approved, [{ text: approved, direction: "outgoing", currentAttempt: "yes" }]) === true,
-  "exact approved outgoing",
-]);
-cases.push([
-  "follow-up cannot be sent evidence",
-  isConfirmedSentEvidence(approved, [{ text: followup, direction: "outgoing", currentAttempt: "yes" }]) === false,
-  "mismatched follow-up",
-]);
-cases.push([
-  "incoming exact text cannot be sent",
-  isConfirmedSentEvidence(approved, [{ text: approved, direction: "incoming", currentAttempt: "yes" }]) === false,
-  "incoming exact",
-]);
-cases.push([
-  "missing current attempt cannot be sent",
-  isConfirmedSentEvidence(approved, [{ text: approved, direction: "outgoing", currentAttempt: "unknown" }]) === false,
-  "currentAttempt unknown",
-]);
-cases.push([
-  "older approved bubble survives newer follow-up when current attempt proven",
-  isConfirmedSentEvidence(approved, [
-    { text: followup, direction: "outgoing", currentAttempt: "yes" },
-    { text: approved, direction: "outgoing", currentAttempt: "yes" },
-  ]) === true,
-  "approved bubble plus newer follow-up",
-]);
-cases.push([
-  "exact normalization keeps whitespace policy",
-  isConfirmedSentEvidence("A\nB", [{ text: " A   B ", direction: "outgoing", currentAttempt: "yes" }]) === true
-    && normalizeInstagramDmExactText("A\r\nB") === normalizeInstagramDmExactText("A B"),
-  "whitespace normalization",
-]);
-cases.push(["progress parser tolerates evidence fields", progressSource.includes("event?.part?.state?.input?.payload?.status"), progressSource.includes("event?.part?.state?.input?.payload?.status")]);
+  "There are only two business outcomes: no conversation history = not_sent, any conversation history = sent.",
+  "A search result by itself is not proof of conversation history.",
+  "If there is no message history, submit not_sent",
+  "If there is at least one message in the conversation",
+  "regardless of whether it was sent by us or received from them",
+  "do not submit uncertain",
+]) check(`prompt policy ${needle}`, promptSource.includes(needle));
 
-let failed = 0;
-for (const [name, ok, detail] of cases) {
-  console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : ` (${detail})`}`);
-  if (!ok) failed += 1;
+for (const forbidden of [
+  "Compare against that exact text",
+  "The newest outgoing message is not automatically the approved DM",
+  "evidence.direction",
+  "evidence.currentAttempt",
+]) check(`legacy exact-message rule removed: ${forbidden}`, !promptSource.includes(forbidden));
+
+check("producer sent schema has no evidence requirement",
+  toolSource.includes('z.object({ ...syncContactFields, status: z.literal("sent") })')
+  && !toolSource.includes('direction: z.literal("outgoing")')
+  && !toolSource.includes('currentAttempt: z.literal("yes")'));
+check("server sent schema has no evidence requirement",
+  serverSource.includes('z.object({ ...contactFields, status: z.literal("sent") })')
+  && !serverSource.includes('isConfirmedSentEvidence'));
+
+check("not_sent uses existing final verification return flow",
+  serverSource.includes('returnDmContactsToFinalVerification(')
+  && serverSource.includes('destination: "final_verification"'));
+check("sent uses existing sent save flow",
+  serverSource.includes('markDmContactSentFromSync(')
+  && serverSource.includes('destination: "dm_ready"'));
+check("uncertain does not mutate state",
+  serverSource.includes('destination: "send_confirmation"')
+  && serverSource.includes('changed: false'));
+
+check("existing final verification function is reused",
+  contactsSource.includes("export async function returnDmContactsToFinalVerification"));
+check("final verification return keeps candidate verification status untouched",
+  !contactsSource.slice(contactsSource.indexOf("export async function returnDmContactsToFinalVerification"), contactsSource.indexOf("export async function markDmContactSentFromSync")).includes('.from("creator_candidates")\n    .update('));
+check("sent save still only sets sent_at",
+  contactsSource.includes('.update({ sent_at: new Date().toISOString() })'));
+
+check("exit=0 incomplete can fallback",
+  launcherSource.includes('$FallbackAllowed = $Code -in @(0,173,174,175,176,179)')
+  && launcherSource.includes('"incomplete_result"'));
+check("browser/tool exits can fallback",
+  launcherSource.includes('elseif ($Code -eq 176) { "browser_unavailable" }')
+  && launcherSource.includes('elseif ($Code -eq 179) { "tool_execution" }'));
+check("inbox unavailable marker classified",
+  promptSource.includes("FIXUP_DM_SYNC_INBOX_UNAVAILABLE")
+  && wrapperSource.includes("FIXUP_LOCAL_browser_unavailable dm_sync_inbox_not_ready"));
+check("stale ref recovery remains bounded",
+  promptSource.includes("retry that intended action exactly once")
+  && launcherSource.includes("retrySameModel"));
+check("provider transient retry remains",
+  launcherSource.includes("RetryDelaySeconds = 10"));
+check("OpenCode free-tier restriction skips pointless retry",
+  launcherSource.includes("PersistentProviderRestriction"));
+
+check("progress parser still records sent/not_sent",
+  progressSource.includes('resultStatus === "sent"') && progressSource.includes('resultStatus === "not_sent"'));
+
+let posted = null;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (_url, init) => {
+  posted = JSON.parse(String(init?.body ?? "null"));
+  return new Response(JSON.stringify({ ok: true, changed: true }), { status: 200 });
+};
+try {
+  const receipt = await sync.execute({ payload: sent }, { agent: "fixup-dm-sync" });
+  check("sent tool POST accepts evidence-free payload", posted?.status === "sent" && receipt.includes('"ok":true'), JSON.stringify(posted));
+} finally {
+  globalThis.fetch = originalFetch;
 }
-if (failed) process.exit(1);
-console.log(`PASS dm-sync regression ${cases.length}/${cases.length}`);
+
+const failed = cases.filter(([, ok]) => !ok);
+for (const [name, ok, detail] of cases) console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` :: ${detail}` : ""}`);
+console.log(`dm-sync regression: ${cases.length - failed.length}/${cases.length} PASS`);
+if (failed.length) process.exit(1);

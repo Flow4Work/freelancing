@@ -234,7 +234,7 @@ export async function getLatestDmContactForHandle(category: SearchCategory, hand
   return (await listUnsentDmContacts(category)).find((contact) => contact.handle === handle) ?? null;
 }
 
-export async function returnDmContactsToFinalVerification(category: SearchCategory, ids: string[]) {
+export async function returnDmContactsToFinalVerification(category: SearchCategory, ids: string[], reason = "사용자 요청: 최종 검증 후보로 되돌림") {
   const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   if (!uniqueIds.length || uniqueIds.length !== ids.length) throw new Error("되돌릴 DM 연락 이력 선택값이 올바르지 않습니다.");
 
@@ -270,7 +270,7 @@ export async function returnDmContactsToFinalVerification(category: SearchCatego
     .update({
       opencode_status: "failed",
       opencode_completed_at: now,
-      opencode_error: "사용자 요청: 최종 검증 후보로 되돌림",
+      opencode_error: reason,
     })
     .eq("category", category)
     .in("id", uniqueIds)
