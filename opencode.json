@@ -92,6 +92,19 @@
                                                                                                                    }
                                                                                                   }
                                                    }
-                                    }
-                 }
+                                    },
+                     "bai": {
+                         "npm": "@ai-sdk/openai-compatible",
+                         "name": "B.AI",
+                         "options": {
+                           "baseURL": "https://api.b.ai/v1"
+                         },
+                         "models": {
+                           "deepseek-v4.1-flash": {
+                             "name": "DeepSeek V4.1 Flash"
+                           }
+                         }
+                       }
+                 },
+    "disabled_providers": ["vercel", "b-ai"]
 }

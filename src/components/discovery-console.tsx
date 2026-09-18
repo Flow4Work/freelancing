@@ -179,7 +179,7 @@ const MODEL_PRESET_LABELS: Record<OpenCodeModelPreset, string> = {
   A: "Spark 우선",
   B: "Nemotron 우선",
   C: "GLM 우선",
-  D: "Vercel 우선",
+  D: "B.AI 우선",
 };
 
 export function DiscoveryConsole() {
@@ -741,6 +741,21 @@ export function DiscoveryConsole() {
     } finally {
       setApiConnectionSavingId(null);
     }
+  }
+
+  async function testBaiConnectionValue() {
+    setApiConnectionSavingId("bai-test");
+    try {
+      const response = await fetch("/api/automation/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId: "bai", action: "test" }),
+      });
+      const payload = await response.json() as { ok: boolean; error?: string; message?: string };
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? "B.AI 연결 실패");
+      setToast({ kind: "success", message: payload.message ?? "B.AI 연결 성공" });
+    } catch (error) {
+      setToast({ kind: "error", message: error instanceof Error ? error.message : "B.AI 연결 실패" });
+    } finally { setApiConnectionSavingId(null); }
   }
 
   async function activateModelPreset() {
@@ -1337,7 +1352,7 @@ export function DiscoveryConsole() {
                 <div className="history-popover" style={{ width: 440, maxHeight: 620, overflowY: "auto" }}>
                   <strong>API 연결</strong>
                   <div style={{ marginTop: 6, color: "#6b7684", fontSize: 12, lineHeight: 1.5 }}>
-                    필수: Exa 또는 Tavily 중 1개 · 권장: OpenCode Zen · 나머지 fallback은 선택
+                    필수: Exa 또는 Tavily 중 1개 · 권장: B.AI · 나머지 fallback은 선택
                   </div>
                   {apiConnectionsLoading ? <div className="history-empty">연결 상태 확인 중…</div> : (
                     (["search", "google-search", "opencode"] as const).map((group) => {
@@ -1359,6 +1374,7 @@ export function DiscoveryConsole() {
                                   <input
                                     type="password"
                                     autoComplete="off"
+                                    aria-label={connection.label + " API Key"}
                                     placeholder={connection.connected ? "새 키로 교체할 때만 입력" : "API Key 입력"}
                                     value={apiConnectionDrafts[connection.id] ?? ""}
                                     onChange={(event) => setApiConnectionDrafts((current) => ({ ...current, [connection.id]: event.target.value }))}
@@ -1367,6 +1383,7 @@ export function DiscoveryConsole() {
                                   <button type="button" className="secondary" onClick={() => saveApiConnectionValue(connection.id)} disabled={!apiConnectionDrafts[connection.id]?.trim() || Boolean(apiConnectionSavingId)}>
                                     {apiConnectionSavingId === connection.id ? "저장 중…" : connection.connected ? "교체" : "연결"}
                                   </button>
+                                  {connection.id === "bai" && <button type="button" className="secondary" onClick={testBaiConnectionValue} disabled={!connection.connected || Boolean(apiConnectionSavingId)}>{apiConnectionSavingId === "bai-test" ? "확인 중…" : "연결 테스트"}</button>}
                                 </div>
                               </div>
                             ))}

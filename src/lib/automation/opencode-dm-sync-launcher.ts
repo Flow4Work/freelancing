@@ -75,28 +75,73 @@ try {
   $Completed = $false
   foreach ($Model in $ModelChain) {
     ${getOpenCodeVariantArgsScript("$Model")}
-    $RemainingIds = @($ExpectedIds | Where-Object { -not $SavedIds.Contains([string]$_) })
-    $RunInstruction = $Instruction + " Process only these remaining contactIds: " + [string]::Join(", ", [string[]]$RemainingIds)
-    $RunOutput = @(& $OpenCode run $RunInstruction --file $PromptFile --model $Model --agent $OpenCodeAgent @VariantArgs)
-    $RunCode = $LASTEXITCODE
-    foreach ($Line in $RunOutput) {
-      [IO.File]::AppendAllText($AttemptLog, [string]$Line + [Environment]::NewLine, $Utf8)
-      try {
-        $Event = $Line | ConvertFrom-Json -ErrorAction Stop
-        if ($Event.type -eq "tool_use" -and $Event.part.tool -eq "fixup_result_sync" -and $Event.part.state.status -eq "completed") {
-          $Receipt = $Event.part.state.output | ConvertFrom-Json -ErrorAction Stop
-          if ($Receipt.ok -eq $true -and $Receipt.fixupReceipt.endpoint -eq "/api/dm/sync-result") { [void]$SavedIds.Add([string]$Receipt.fixupReceipt.id) }
-        }
-      } catch {}
-    }
-    $Code = $RunCode
-    if ($null -eq $Code) { $Code = 0 }
+    $SameModelRetryUsed = $false
 
-    if (@($ExpectedIds | Where-Object { -not $SavedIds.Contains([string]$_) }).Count -eq 0) { $Completed = $true; break }
-    if ($Code -notin @(173,174,175)) { throw "$(if (Test-Path -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE) { Get-Content -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE -Raw -Encoding UTF8 }) DM sync result incomplete/local failure: exit=$Code saved=$($SavedIds.Count)/$($ExpectedIds.Count); fallback denied. See $AttemptLog and FixUp raw logs." }
+    while ($true) {
+      $RemainingIds = @($ExpectedIds | Where-Object { -not $SavedIds.Contains([string]$_) })
+      if ($RemainingIds.Count -eq 0) { $Completed = $true; break }
+
+      $RunInstruction = $Instruction + " Process only these remaining contactIds: " + [string]::Join(", ", [string[]]$RemainingIds)
+      $RunOutput = @(& $OpenCode run $RunInstruction --file $PromptFile --model $Model --agent $OpenCodeAgent @VariantArgs)
+      $RunCode = $LASTEXITCODE
+      foreach ($Line in $RunOutput) {
+        [IO.File]::AppendAllText($AttemptLog, [string]$Line + [Environment]::NewLine, $Utf8)
+        try {
+          $Event = $Line | ConvertFrom-Json -ErrorAction Stop
+          if ($Event.type -eq "tool_use" -and $Event.part.tool -eq "fixup_result_sync" -and $Event.part.state.status -eq "completed") {
+            $Receipt = $Event.part.state.output | ConvertFrom-Json -ErrorAction Stop
+            if ($Receipt.ok -eq $true -and $Receipt.fixupReceipt.endpoint -eq "/api/dm/sync-result") { [void]$SavedIds.Add([string]$Receipt.fixupReceipt.id) }
+          }
+        } catch {}
+      }
+
+      $Code = $RunCode
+      if ($null -eq $Code) { $Code = 0 }
+      $RemainingAfter = @($ExpectedIds | Where-Object { -not $SavedIds.Contains([string]$_) })
+      if ($RemainingAfter.Count -eq 0) { $Completed = $true; break }
+
+      $ErrorDetail = if (Test-Path -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE) { Get-Content -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE -Raw -Encoding UTF8 } else { "" }
+      $FallbackAllowed = $Code -in @(0,173,174,175,176,179)
+      if ($Code -in @(184,185,186)) { $FallbackAllowed = $true }
+      $FallbackReason = if ($Code -eq 0) { "incomplete_result" }
+        elseif ($Code -eq 181) { "auth" }
+        elseif ($Code -eq 182) { "invalid_model" }
+        elseif ($Code -eq 183) { "malformed_request" }
+        elseif ($Code -eq 184) { "tool_incompatible" }
+        elseif ($Code -eq 185) { "timeout" }
+        elseif ($Code -eq 186) { "rate_limit" }
+        elseif ($Code -eq 173) { "quota" }
+        elseif ($Code -eq 174) { "quota" }
+        elseif ($Code -eq 175) { "provider_unavailable" }
+        elseif ($Code -eq 176) { "browser_unavailable" }
+        elseif ($Code -eq 179) { "tool_execution" }
+        else { "local_failure" }
+
+      if (-not $FallbackAllowed) { throw "$ErrorDetail DM sync result incomplete/local failure: exit=$Code saved=$($SavedIds.Count)/$($ExpectedIds.Count); fallback denied. See $AttemptLog and FixUp raw logs." }
+
+      $PersistentProviderRestriction = $Code -eq 175 -and $ErrorDetail -match "free-tier automation access rejected|can only be used from within OpenCode"
+      $RetryDelaySeconds = -1
+      if (-not $SameModelRetryUsed) {
+        if ($Code -eq 175 -and -not $PersistentProviderRestriction) { $RetryDelaySeconds = 10 }
+        elseif ($Code -in @(0,176,179)) { $RetryDelaySeconds = 2 }
+        elseif ($Code -in @(185,186)) { $RetryDelaySeconds = 10 }
+      }
+
+      if ($RetryDelaySeconds -ge 0) {
+        [IO.File]::AppendAllText($AttemptLog, ('{"type":"fixup_control","classification":"' + $FallbackReason + '","fallback":false,"retrySameModel":true,"retryDelaySeconds":' + $RetryDelaySeconds + ',"exitCode":' + $Code + ',"saved":' + $SavedIds.Count + ',"total":' + $ExpectedIds.Count + '}' + [Environment]::NewLine), $Utf8)
+        $SameModelRetryUsed = $true
+        Start-Sleep -Seconds $RetryDelaySeconds
+        continue
+      }
+
+      [IO.File]::AppendAllText($AttemptLog, ('{"type":"fixup_control","classification":"' + $FallbackReason + '","fallback":true,"exitCode":' + $Code + ',"saved":' + $SavedIds.Count + ',"total":' + $ExpectedIds.Count + '}' + [Environment]::NewLine), $Utf8)
+      break
+    }
+
+    if ($Completed) { break }
     Start-Sleep -Milliseconds 500
   }
-  if (-not $Completed) { throw "OpenCode sent sync fallback exhausted" }
+  if (-not $Completed) { throw "OpenCode sent sync fallback exhausted: saved=$($SavedIds.Count)/$($ExpectedIds.Count). See $AttemptLog and FixUp raw logs." }
 } catch {
   try { [IO.File]::WriteAllText($FailedFile, $_.Exception.Message, $Utf8) } catch {}
   exit 1

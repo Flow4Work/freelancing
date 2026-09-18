@@ -127,6 +127,12 @@ function Get-PendingContacts {
 
 function Get-AttemptClassification([int]$ExitCode) {
   switch ($ExitCode) {
+    181 { return "auth" }
+    182 { return "invalid_model" }
+    183 { return "malformed_request" }
+    184 { return "tool_incompatible" }
+    185 { return "timeout" }
+    186 { return "rate_limit" }
     173 { return "confirmed_primary_quota" }
     174 { return "confirmed_provider_quota" }
     175 { return "transient_provider_unavailable" }
@@ -208,10 +214,10 @@ try {
     Write-Host "[FixUp Scout] DM attempt result · model $Model · exit $LastCode · $Classification · pending $($PendingBefore.Count)->$($PendingAfter.Count)" -ForegroundColor DarkGray
 
     if ($PendingAfter.Count -eq 0) { break }
-    if ($LastCode -notin @(173,174,175)) { throw "$(if (Test-Path -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE) { Get-Content -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE -Raw -Encoding UTF8 }) DM local execution/result failure: exit=$LastCode pending=$($PendingAfter.Count); fallback denied. See FixUp raw logs." }
+    if ($LastCode -notin @(173,174,175,184,185,186)) { throw "$(if (Test-Path -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE) { Get-Content -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE -Raw -Encoding UTF8 }) DM local execution/result failure: exit=$LastCode pending=$($PendingAfter.Count); fallback denied. See FixUp raw logs." }
     if ($OpenCodeRunCount -lt $ModelChain.Count) {
       $NextModel = [string]$ModelChain[$OpenCodeRunCount]
-      if ($LastCode -in @(173, 174, 175)) {
+      if ($LastCode -in @(173, 174, 175, 184, 185, 186)) {
         Write-Host "[FixUp Scout] $Classification 확정 · 대기 없이 다음 fallback -> $NextModel · pending $($PendingAfter.Count)" -ForegroundColor Yellow
       } else {
         Write-Host "[FixUp Scout] $Classification · pending $($PendingAfter.Count)명 · 기존 안전 대기 45초 후 다음 fallback -> $NextModel" -ForegroundColor Yellow

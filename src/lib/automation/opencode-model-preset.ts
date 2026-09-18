@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 export type OpenCodeModelPreset = "A" | "B" | "C" | "D";
-type ModelKey = "spark" | "nemotron" | "vercel" | "glm53" | "venice" | "glm47";
+type ModelKey = "spark" | "nemotron" | "bai" | "glm53" | "venice" | "glm47";
 
 const DEFAULT_MODELS: Record<ModelKey, string> = {
   spark: "opencode/muse-spark-1.2-contributor-free",
   nemotron: "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-  vercel: "vercel/alibaba/qwen3.8-27b",
+  bai: "bai/deepseek-v4.1-flash",
   glm53: "zai-coding-plan/glm-5.3-flash",
   venice: "venice/stealth-ox-alpha",
   glm47: "zai-coding-plan/glm-4.7",
@@ -17,17 +17,17 @@ const DEFAULT_MODELS: Record<ModelKey, string> = {
 const MODEL_ENV: Record<ModelKey, string> = {
   spark: "FIXUP_OPENCODE_PRIMARY_MODEL",
   nemotron: "FIXUP_OPENCODE_NEMOTRON_MODEL",
-  vercel: "FIXUP_OPENCODE_VERCEL_MODEL",
+  bai: "FIXUP_OPENCODE_BAI_MODEL",
   glm53: "FIXUP_OPENCODE_GLM53_MODEL",
   venice: "FIXUP_OPENCODE_VENICE_MODEL",
   glm47: "FIXUP_OPENCODE_GLM47_MODEL",
 };
 
 const PRESET_ORDERS: Record<OpenCodeModelPreset, readonly ModelKey[]> = {
-  A: ["spark", "nemotron", "vercel", "glm53", "venice", "glm47"],
-  B: ["nemotron", "vercel", "glm53", "venice", "glm47", "spark"],
-  C: ["glm53", "glm47", "spark", "nemotron", "vercel", "venice"],
-  D: ["vercel", "spark", "nemotron", "glm53", "venice", "glm47"],
+  A: ["spark", "nemotron", "bai", "glm53", "venice", "glm47"],
+  B: ["nemotron", "bai", "glm53", "venice", "glm47", "spark"],
+  C: ["glm53", "glm47", "spark", "nemotron", "bai", "venice"],
+  D: ["bai", "spark", "nemotron", "glm53", "venice", "glm47"],
 };
 
 const SETTINGS_PATH = path.join(
@@ -78,7 +78,14 @@ export function getOpenCodeModelChain(preset = getOpenCodeModelPreset()) {
   if (resolved.nemotron !== DEFAULT_MODELS.nemotron) {
     throw new Error(`FIXUP_OPENCODE_NEMOTRON_MODEL must resolve to ${DEFAULT_MODELS.nemotron}; refusing an unverified model/variant`);
   }
-  return [...new Set(PRESET_ORDERS[preset].map((key) => resolved[key]))];
+  if (resolved.bai !== DEFAULT_MODELS.bai) {
+    throw new Error("B.AI model must be bai/deepseek-v4.1-flash");
+  }
+  const chain = [...new Set(PRESET_ORDERS[preset].map((key) => resolved[key]))];
+  if (chain.some((model) => /^vercel\//i.test(model))) {
+    throw new Error("Vercel LLM routing is disabled. Select a direct provider.");
+  }
+  return chain;
 }
 
 export function getOpenCodeModelPresets() {

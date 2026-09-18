@@ -115,7 +115,7 @@ function Test-RecoverableBrowserToolFailure([string]$Tool, [string]$Detail) {
     $StaleRef = $Detail -match '(?is)(Ref\s+(?:f\d+)?e\d+\s+not found in the current page snapshot|FIXUP_REF_GUARD raw snapshot ref .* is not proven|element.*(?:detached|not attached))'
     $ClickActionability = $Tool -eq 'playwright_b_browser_click' -and $Detail -match '(?is)TimeoutError: browserBackend\.callTool: Timeout 5000ms exceeded.*(?:locator resolved to|waiting for locator\(''aria-ref=).*?(?:attempting click action|waiting for element to be visible, enabled and stable)'
 
-    if ($Agent -eq 'fixup-dm-sync') { return $ClickActionability }
+    if ($Agent -eq 'fixup-dm-sync') { return $ClickActionability -or $StaleRef }
     if ($Agent -eq 'fixup-dm') { return $ClickActionability -or $StaleRef }
     if ($Agent -eq 'fixup-verification') { return $ClickActionability -or $StaleRef }
     return $false
@@ -131,12 +131,20 @@ function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
     foreach ($Line in ($StdoutText -split "`r?`n")) {
         try { $Event = $Line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
         if ($Event.type -eq 'error') { [void]$Parts.Add(($Event.error | ConvertTo-Json -Depth 30 -Compress)) }
+        if ($Event.type -eq 'text' -and [string]$env:FIXUP_SCOUT_AGENT -eq 'fixup-dm-sync' -and [string]$Event.part.text -match 'FIXUP_DM_SYNC_INBOX_UNAVAILABLE') {
+            [void]$Parts.Add('FIXUP_LOCAL_browser_unavailable dm_sync_inbox_not_ready')
+        }
         if ($Event.type -eq 'tool_use') {
             $State = $Event.part.state
             $Tool = [string]$Event.part.tool
             if ($Tool -like 'playwright_b_*' -and $State.status -eq 'completed') { $BrowserToolCompleted = $true }
             if ($State.status -eq 'error' -or [string]$State.output -match '^### Error') {
                 $Detail = [string]$State.error + ' ' + [string]$State.output
+                $DmSyncHandledClickTimeout = [string]$env:FIXUP_SCOUT_AGENT -eq 'fixup-dm-sync' -and $Tool -eq 'playwright_b_browser_click' -and $Detail.Contains('Timeout 5000ms exceeded') -and $Detail.Contains('waiting for element to be visible, enabled and stable')
+                if ($DmSyncHandledClickTimeout) {
+                    [void]$Parts.Add("FIXUP_DM_SYNC_HANDLED_click_actionability tool=$Tool")
+                    continue
+                }
                 if (Test-RecoverableBrowserToolFailure $Tool $Detail) {
                     $RecoverableBrowserFailureCount += 1
                     if ($RecoverableBrowserFailureCount -le 1) {
@@ -147,6 +155,7 @@ function Get-OpenCodeErrorSignal([string]$StdoutText, [string]$StderrText) {
                 $SharedBrowserFailure = $Detail -match '(?i)(spawn|connection|\bNot connected\b|Extension not connected|MCP\s+(?:connection|server|transport|unavailable|failed)|browser.*launch)'
                 $BareMcpRequestTimeout = $Detail -match '(?i)MCP error\s+-32001:\s*Request timed out'
                 $Kind = if ($Detail -match '(?i)(FIXUP_PERMISSION_DENIED|prevents you from using|permission.*den|rejected permission)') { 'permission_denied' }
+                    elseif ($Tool -like 'fixup_result_*' -and $Detail -match 'FIXUP_TOOL_VALIDATION_FAILED') { 'tool_execution' }
                     elseif ($Tool -like 'fixup_result_*') { 'post_failure' }
                     elseif ($Tool -like 'playwright_b_*' -and $SharedBrowserFailure) { 'browser_unavailable' }
                     elseif ($Tool -like 'playwright_b_*' -and $BareMcpRequestTimeout -and -not $BrowserToolCompleted) { 'browser_unavailable' }
@@ -197,8 +206,8 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
         return $Text -match '(?i)(\b402\b.{0,120}(?:Cloud credits expired|Payment Required)|Cloud credits expired|(?:credit|credits|balance).{0,100}(?:expired|exhausted|insufficient|depleted))'
     }
 
-    if ($Provider -eq 'vercel') {
-        return $Text -match '(?i)(\b402\b.{0,120}Payment Required|requires a valid credit card|add a card.{0,80}(?:free credits|credits)|Free tier users do not have access to this model|Upgrade to paid credits|(?:credit|credits|balance).{0,100}(?:expired|exhausted|insufficient|depleted|locked))'
+    if ($Provider -eq 'bai') {
+        return $Text -match '(?i)(\b402\b|Payment Required|insufficient[_ -]?(?:quota|credits?|balance)|(?:credit|credits|balance).{0,100}(?:expired|exhausted|insufficient|depleted|locked))'
     }
 
     if ($Provider -eq 'venice') {
@@ -206,6 +215,19 @@ function Test-ProviderBillingQuota([string]$Provider, [string]$Text) {
     }
 
     return $false
+}
+
+function Get-BaiFailureCode([string]$Text) {
+    if ($Provider -ne 'bai' -or [string]::IsNullOrWhiteSpace($Text)) { return 0 }
+    if ($Text -match 'FIXUP_LOCAL_|browserBackend|FIXUP_RECOVERABLE_browser_tool') { return 0 }
+    if (Test-ProviderBillingQuota $Provider $Text) { return 174 }
+    if ($Text -match '(?i)(\b401\b|\b403\b|unauthorized|invalid.api.key|authentication.failed)') { return 181 }
+    if ($Text -match '(?i)(model.not.found|unknown.model|invalid.model|model.{0,60}(?:not found|does not exist))') { return 182 }
+    if ($Text -match '(?i)(tool.{0,60}(?:not supported|unsupported|incompatible)|unsupported.{0,40}tool)') { return 184 }
+    if ($Text -match '(?i)(invalid_request|malformed.request|\b400\b)') { return 183 }
+    if (Test-ProviderRateLimit $Text) { return 186 }
+    if ($Text -match '(?i)(ETIMEDOUT|request.timed.out|request.timeout|TimeoutError)') { return 185 }
+    return 0
 }
 
 function Test-ProviderUnavailable([string]$Text) {
@@ -279,6 +301,17 @@ $IsRun = $Arguments.Count -gt 0 -and [string]$Arguments[0] -eq 'run'
 $Provider = Get-ProviderName $Model
 if ($IsRun -and $env:FIXUP_OPENCODE_ERROR_FILE) { Remove-Item -LiteralPath $env:FIXUP_OPENCODE_ERROR_FILE -Force -ErrorAction SilentlyContinue }
 $IsPrimary = $IsRun -and $Model -eq $PrimaryModel
+if ($IsRun -and $Provider -eq 'bai') {
+    $AuthPath = Join-Path $env:USERPROFILE '.local\share\opencode\auth.json'
+    $BaiKey = ''
+    try { $BaiAuth = Get-Content -LiteralPath $AuthPath -Raw -Encoding UTF8 | ConvertFrom-Json; $BaiKey = [string]$BaiAuth.bai.key } catch {}
+    if ([string]::IsNullOrWhiteSpace($BaiKey)) {
+        [Console]::Error.WriteLine('B.AI API Key missing: save B.AI API Key in FixUp API settings.')
+        exit 181
+    }
+    $BaiKey = $null
+}
+
 $IsOpenRouterFree = $IsRun -and $Provider -eq 'openrouter' -and $Model -match ':free$'
 
 if ($IsOpenRouterFree -and $null -ne (Get-OpenRouterDailyCircuit)) {
@@ -383,6 +416,12 @@ try {
         Write-FilteredOpenCodeOutput ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
 
         $SignalText = Get-OpenCodeErrorSignal ([string](Get-NewText $StdoutFile 0).Text) ([string](Get-NewText $StderrFile 0).Text)
+        $BaiFailure = Get-BaiFailureCode $SignalText
+        if ($BaiFailure -ne 0) {
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine("B.AI provider failure: code=$BaiFailure model=$Model")
+            exit $BaiFailure
+        }
         $LocalCode = Get-LocalFailureCode $SignalText
         if ($LocalCode -ne 0) {
             Stop-OwnChildTree $Child.Id
@@ -476,6 +515,12 @@ try {
     $ErrDelta = Get-NewText $StderrFile $StderrOffset
     Write-FilteredOpenCodeOutput ([string]$OutDelta.Text) ([string]$ErrDelta.Text)
     $SignalText = Get-OpenCodeErrorSignal ([string](Get-NewText $StdoutFile 0).Text) ([string](Get-NewText $StderrFile 0).Text)
+        $BaiFailure = Get-BaiFailureCode $SignalText
+        if ($BaiFailure -ne 0) {
+            Stop-OwnChildTree $Child.Id
+            [Console]::Error.WriteLine("B.AI provider failure: code=$BaiFailure model=$Model")
+            exit $BaiFailure
+        }
         $LocalCode = Get-LocalFailureCode $SignalText
         if ($LocalCode -ne 0) {
             Stop-OwnChildTree $Child.Id

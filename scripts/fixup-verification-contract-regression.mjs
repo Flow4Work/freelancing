@@ -45,17 +45,36 @@ check("required jobId missing is rejected", !verificationPayloadSchema.safeParse
 
 let fetchCalls = 0;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = async () => { fetchCalls += 1; throw new Error("network must not be reached"); };
-let capturedError = "";
+let serializedBody = null;
+globalThis.fetch = async (_url, init) => {
+  fetchCalls += 1;
+  serializedBody = JSON.parse(String(init?.body ?? "null"));
+  return new Response(JSON.stringify({ ok: true, processedCount: 1, totalCount: 30, completed: false }), { status: 200 });
+};
+let serializedReceipt = "";
 try {
-  await verification.execute({ payload: capturedSerialized }, { agent: "fixup-verification" });
-} catch (error) {
-  capturedError = String(error);
+  serializedReceipt = await verification.execute({ payload: capturedSerialized }, { agent: "fixup-verification" });
+} finally {
+  globalThis.fetch = originalFetch;
 }
 check(
-  "old OpenCode serialized tool call fails before HTTP",
-  fetchCalls === 0 && capturedError.includes("FIXUP_TOOL_VALIDATION_FAILED") && capturedError.includes("expected object"),
-  `fetchCalls=${fetchCalls} error=${capturedError}`,
+  "serialized JSON payload is normalized before canonical validation",
+  fetchCalls === 1 && JSON.stringify(serializedBody) === JSON.stringify(capturedCanonical) && serializedReceipt.includes('"ok":true'),
+  `fetchCalls=${fetchCalls} body=${JSON.stringify(serializedBody)} receipt=${serializedReceipt}`,
+);
+
+fetchCalls = 0;
+globalThis.fetch = async () => { fetchCalls += 1; throw new Error("network must not be reached"); };
+let malformedError = "";
+try {
+  await verification.execute({ payload: "{bad json" }, { agent: "fixup-verification" });
+} catch (error) {
+  malformedError = String(error);
+}
+check(
+  "malformed serialized payload still fails before HTTP",
+  fetchCalls === 0 && malformedError.includes("FIXUP_TOOL_VALIDATION_FAILED"),
+  `fetchCalls=${fetchCalls} error=${malformedError}`,
 );
 globalThis.fetch = originalFetch;
 

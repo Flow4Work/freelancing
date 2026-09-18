@@ -33,11 +33,11 @@ assert.equal(quality.ok, true, JSON.stringify(quality.failures));
 const model = load('src/lib/automation/opencode-model-preset.ts');
 const nemotron = 'openrouter/nvidia/nemotron-3-super-120b-a12b:free';
 const spark = 'opencode/muse-spark-1.2-contributor-free';
-const vercel = 'vercel/alibaba/qwen3.8-27b';
+const bai = 'bai/deepseek-v4.1-flash';
 const glm53 = 'zai-coding-plan/glm-5.3-flash';
 const venice = 'venice/stealth-ox-alpha';
 const glm47 = 'zai-coding-plan/glm-4.7';
-const expected = { A: [spark,nemotron,vercel,glm53,venice,glm47], B: [nemotron,vercel,glm53,venice,glm47,spark], C: [glm53,glm47,spark,nemotron,vercel,venice], D: [vercel,spark,nemotron,glm53,venice,glm47] };
+const expected = { A: [spark,nemotron,bai,glm53,venice,glm47], B: [nemotron,bai,glm53,venice,glm47,spark], C: [glm53,glm47,spark,nemotron,bai,venice], D: [bai,spark,nemotron,glm53,venice,glm47] };
 for (const [preset, chain] of Object.entries(expected)) {
   assert.deepEqual(model.getOpenCodeModelChain(preset), chain);
   for (const id of chain) assert.equal(model.getOpenCodeVariant(id), id === nemotron ? 'high' : undefined);
@@ -87,6 +87,7 @@ const brandText = '韓国薬局コスメ・再生クリーム。医者×薬剤�
 assert.equal(assessment.assessDiscoveryCandidate({handle:'product_brand_fixture',evidenceKind:'profile',title:'',text:brandText,profileText:brandText,category:'beauty',accountAvailability:'unknown'}),null);
 const files = new Map();
 launcherMocks = {
+  "./api-connections": { getApiConnections: () => [{ id: "bai", connected: true }] },
   'node:child_process': { spawnSync: () => ({ status:0,stdout:'12345',stderr:'' }) },
   'node:fs/promises': {
     mkdir: async()=>{}, rm: async()=>{},

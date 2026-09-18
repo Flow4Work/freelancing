@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getOpenCodeCommand } from "./config";
+import { getApiConnections } from "./api-connections";
 import { getOpenCodeModelChain, getOpenCodeVariantArgsScript } from "./opencode-model-preset";
 import { getOpenCodeAgent } from "./opencode-execution-policy";
 import { getOpenCodeRuntimeRoot, getVerificationPostFailurePath } from "./opencode-runtime";
@@ -21,6 +22,9 @@ export function assertLocalRequest(request: Request) {
 }
 
 export function assertOpenCodeAvailable() {
+  if (getOpenCodeModelChain()[0] === "bai/deepseek-v4.1-flash" && !getApiConnections().find((item) => item.id === "bai")?.connected) {
+    throw new Error("B.AI API Key를 API 연결 화면에서 먼저 저장해 주세요.");
+  }
   const command = getOpenCodeCommand();
   const check = spawnSync(
     "powershell.exe",
@@ -277,6 +281,14 @@ function Get-RetryAfterSeconds([string]$Text) {
   return $null
 }
 function Get-FailureClassification([string]$Text, [int]$ExitCode) {
+  switch ($ExitCode) {
+    181 { return "auth" }
+    182 { return "invalid_model" }
+    183 { return "malformed_request" }
+    184 { return "tool_incompatible" }
+    185 { return "timeout" }
+    186 { return "rate_limit" }
+  }
   if ($Text -match 'FIXUP_LOCAL_permission_denied' -or $ExitCode -eq 177) { return "permission_denied" }
   if ($Text -match 'FIXUP_LOCAL_post_failure' -or $ExitCode -eq 178) { return "post_failure" }
   if ($Text -match 'FIXUP_LOCAL_browser_unavailable' -or $ExitCode -eq 176) { return "browser_unavailable" }
@@ -458,38 +470,38 @@ try {
       break
     }
 
-    if ($Result.classification -eq "browser_unavailable") {
-      Write-AttemptEvent $Model "browser_unavailable" $false "shared browser/MCP preflight failed; reinitialize same model once"
-      Write-DiagnosticEvent $Model "browser_unavailable" $false ([int]$Result.exitCode) "shared browser/MCP preflight failed; reinitialize same model once"
-      Write-Host "[FixUp Scout] browser recovery -> reinitialize playwright_b/Profile 3 and retry the same model once" -ForegroundColor Yellow
-      Ensure-PlaywrightBChrome
-      Start-Sleep -Seconds 2
+    $SameModelRetryDelay = -1
+    $SameModelRetryReason = ""
+    if ($Result.classification -in @("provider_unavailable", "timeout") -and [string]$Result.detail -notmatch "free-tier automation access rejected") {
+      $SameModelRetryDelay = 10
+      $SameModelRetryReason = "provider transient 5xx/unavailable"
+    } elseif ($Result.classification -eq "rate_limit") {
+      $Delay = if ($null -ne $Result.retryAfter -and [int]$Result.retryAfter -gt 0) { [int]$Result.retryAfter } else { 10 }
+      if ($Delay -le $MaxRetryAfterSeconds) {
+        $SameModelRetryDelay = $Delay
+        $SameModelRetryReason = "transient rate limit"
+      }
+    } elseif ($Result.classification -in @("browser_unavailable", "tool_execution", "incomplete")) {
+      $SameModelRetryDelay = 2
+      $SameModelRetryReason = "fresh local/browser attempt"
+    }
+
+    if ($SameModelRetryDelay -ge 0) {
+      Write-AttemptEvent $Model ([string]$Result.classification) $false "same-model bounded retry in $SameModelRetryDelay s: $SameModelRetryReason"
+      Write-DiagnosticEvent $Model ([string]$Result.classification) $false ([int]$Result.exitCode) "same-model bounded retry in $SameModelRetryDelay s: $SameModelRetryReason"
+      if ($Result.classification -in @("browser_unavailable", "tool_execution")) { Ensure-PlaywrightBChrome }
+      Start-Sleep -Seconds $SameModelRetryDelay
       $Sequence += 1
       $Result = Invoke-OpenCodeAttempt $Model $Sequence
       if ($Result.classification -eq "completed") {
-        Write-AttemptEvent $Model "completed" $false "job completed after browser recovery"
-        Write-DiagnosticEvent $Model "completed" $false 0 "job completed after browser recovery"
-        break
-      }
-      if ($Result.classification -eq "browser_unavailable") {
-        Write-AttemptEvent $Model "browser_unavailable" $false "shared browser/MCP still unavailable after recovery"
-        Write-DiagnosticEvent $Model "browser_unavailable" $false ([int]$Result.exitCode) "shared browser/MCP still unavailable after recovery"
-        throw "$Model ? shared playwright_b/Profile 3 browser/MCP recovery failed"
-      }
-    }
-
-    if ($Result.classification -eq "rate_limit" -and $null -ne $Result.retryAfter -and [int]$Result.retryAfter -gt 0 -and [int]$Result.retryAfter -le $MaxRetryAfterSeconds) {
-      Write-AttemptEvent $Model "rate_limit" $false "Retry-After $($Result.retryAfter)s 경과 후 동일 model 1회만 재시도"
-      $Sequence += 1
-      $Result = Invoke-OpenCodeAttempt $Model $Sequence
-      if ($Result.classification -eq "completed") {
-        Write-AttemptEvent $Model "completed" $false "짧은 429 재시도 후 동일 job 완료"
-        Write-DiagnosticEvent $Model "completed" $false 0 "짧은 429 재시도 후 동일 job 완료"
+        Write-AttemptEvent $Model "completed" $false "job completed after one same-model bounded retry"
+        Write-DiagnosticEvent $Model "completed" $false 0 "job completed after one same-model bounded retry"
         break
       }
     }
 
-    $Retryable = @("quota", "rate_limit", "provider_unavailable", "tool_execution") -contains [string]$Result.classification
+    $Retryable = @("quota", "rate_limit", "provider_unavailable", "browser_unavailable", "tool_execution", "incomplete") -contains [string]$Result.classification
+    if ($Result.classification -in @("timeout", "tool_incompatible")) { $Retryable = $true }
     $HasFallback = $Retryable -and ($Index + 1 -lt $ModelChain.Count)
     Write-AttemptEvent $Model ([string]$Result.classification) $HasFallback ([string]$Result.detail)
     Write-DiagnosticEvent $Model ([string]$Result.classification) $HasFallback ([int]$Result.exitCode) ([string]$Result.detail)

@@ -83,3 +83,11 @@ git switch feat/fixup-scout-foundation
 5. 하루 100명 컨택을 위해 120~150명 검증 가능 후보를 안정적으로 확보하는지 반복 테스트
 
 DM 생성은 이 도구에 넣지 않습니다. 최종 후보 근거를 ChatGPT에 넘겨 개인화 DM을 만드는 흐름으로 분리합니다.
+
+## B.AI Direct API
+FixUp 모델 순서 D는 B.AI / DeepSeek V4.1 Flash를 우선 사용합니다.
+실제 API 모델 ID는 deepseek-v4.1-flash, OpenCode ID는 bai/deepseek-v4.1-flash입니다.
+API 연결 화면에서 B.AI API Key를 저장한 뒤 연결 테스트를 실행하세요.
+키는 기존 OpenCode credential store의 bai 항목에만 저장되며 응답에는 연결 여부만 포함됩니다.
+B.AI는 https://api.b.ai/v1을 직접 사용합니다. Vercel LLM provider는 프로젝트에서 차단합니다.
+Vercel 배포 설정은 유지합니다. 기존 다른 provider의 fallback과 MCP 설정은 유지합니다.
