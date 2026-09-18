@@ -1,0 +1,110 @@
+{
+    "$schema":  "https://opencode.ai/config.json",
+    "plugin":  [
+                   "./.opencode/plugin/fixup-playwright-ref-guard.mjs"
+               ],
+    "compaction":  {
+                       "auto":  true,
+                       "prune":  true,
+                       "reserved":  10000
+                   },
+    "mcp":  {
+                "playwright_a":  {
+                                     "enabled":  false
+                                 },
+                "playwright_ownerbe":  {
+                                           "enabled":  false
+                                       }
+            },
+    "agent":  {
+                  "fixup-duplicate":  {
+                                          "description":  "FixUp duplicate-check browser execution only",
+                                          "mode":  "primary",
+                                          "permission":  {
+                                                             "*":  "deny",
+                                                             "playwright_b_*":  "allow",
+                                                             "playwright_b_browser_run_code_unsafe":  "deny",
+                                                             "bash":  {
+                                                                          "*":  "deny"
+                                                                      },
+                                                             "fixup_result_duplicate":  "allow"
+                                                         }
+                                      },
+                  "fixup-verification":  {
+                                             "description":  "FixUp Instagram verification browser execution only",
+                                             "mode":  "primary",
+                                             "permission":  {
+                                                                "*":  "deny",
+                                                                "playwright_b_*":  "allow",
+                                                                "playwright_b_browser_run_code_unsafe":  "deny",
+                                                                "bash":  {
+                                                                             "*":  "deny"
+                                                                         },
+                                                                "fixup_result_verification":  "allow"
+                                                            }
+                                         },
+                  "fixup-dm":  {
+                                   "description":  "FixUp DM composer preparation only",
+                                   "mode":  "primary",
+                                   "permission":  {
+                                                      "*":  "deny",
+                                                      "playwright_b_*":  "allow",
+                                                      "playwright_b_browser_run_code_unsafe":  "deny",
+                                                      "playwright_b_browser_press_key":  "deny",
+                                                      "bash":  {
+                                                                   "*":  "deny"
+                                                               },
+                                                      "fixup_result_dm":  "allow"
+                                                  }
+                               },
+                  "fixup-dm-sync":  {
+                                        "description":  "FixUp DM sent-status inbox search only",
+                                        "mode":  "primary",
+                                        "permission":  {
+                                                           "*":  "deny",
+                                                           "playwright_b_*":  "allow",
+                                                           "playwright_b_browser_run_code_unsafe":  "deny",
+                                                           "playwright_b_browser_press_key":  "deny",
+                                                           "playwright_b_browser_evaluate":  "deny",
+                                                           "playwright_b_browser_console_messages":  "deny",
+                                                           "bash":  {
+                                                                        "*":  "deny"
+                                                                    },
+                                                           "fixup_result_sync":  "allow"
+                                                       }
+                                    }
+              },
+    "provider":  {
+                     "venice":  {
+                                    "models":  {
+                                                   "stealth-ox-alpha":  {
+                                                                            "name":  "Ox Alpha"
+                                                                        }
+                                               }
+                                },
+                     "openrouter":  {
+                                        "models":  {
+                                                       "nvidia/nemotron-3-super-120b-a12b:free":  {
+                                                                                                      "variants":  {
+                                                                                                                       "high":  {
+                                                                                                                                    "reasoningEffort":  "high"
+                                                                                                                                }
+                                                                                                                   }
+                                                                                                  }
+                                                   }
+                                    },
+                     "bai": {
+                         "npm": "@ai-sdk/openai-compatible",
+                         "name": "B.AI",
+                         "options": {
+                           "baseURL": "https://api.b.ai/v1"
+                         },
+                         "models": {
+                           "deepseek-v4.1-flash": {
+                             "name": "DeepSeek V4.1 Flash"
+                           }
+                         }
+                       }
+                 },
+    "disabled_providers": ["vercel", "b-ai"]
+}

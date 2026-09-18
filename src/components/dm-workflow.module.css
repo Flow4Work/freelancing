@@ -1,0 +1,375 @@
+.dmActionButton {
+  color: #6b4a00 !important;
+  background: #f6d365 !important;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.dmActionButton:hover:not(:disabled) {
+  color: #5d4000 !important;
+  background: #efc84e !important;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(25, 31, 40, .42);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  border: 1px solid rgba(25, 31, 40, .08);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .2);
+}
+
+.modalHead {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid #e5e8eb;
+}
+
+.modalTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.modalTitle strong {
+  font-size: 19px;
+}
+
+.modalTitle span {
+  color: #8b95a1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.closeButton {
+  border: 0;
+  padding: 2px 7px;
+  color: #6b7684;
+  background: transparent;
+  cursor: pointer;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.closeButton:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.reviewHead {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  border-bottom: 1px solid #e5e8eb;
+  background: #fff;
+}
+
+.reviewHeadCell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+.reviewHeadCell + .reviewHeadCell {
+  border-left: 1px solid #e5e8eb;
+}
+
+.reviewHeadCell strong {
+  font-size: 14px;
+}
+
+.readOnlyLabel,
+.translationPending {
+  color: #8b95a1;
+  font-size: 12px;
+}
+
+.reviewBody {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 320px;
+  height: min(640px, calc(100vh - 220px));
+  overflow: hidden;
+}
+
+.bulkEditor {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #fff;
+}
+
+.bulkTextarea {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  padding: 18px;
+  color: #252c35;
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  outline: none;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.bulkTextarea:focus {
+  box-shadow: inset 0 0 0 3px rgba(49, 130, 246, .08);
+}
+
+.bulkTextarea:disabled {
+  color: #4e5968;
+  background: #fafbfc;
+}
+
+.parseError {
+  flex: 0 0 auto;
+  border-top: 1px solid #ffd8d8;
+  padding: 10px 14px;
+  color: #c92a2a;
+  background: #fff5f5;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.reviewStream {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.reviewStream + .reviewStream,
+.bulkEditor + .reviewStream {
+  border-left: 1px solid #e5e8eb;
+}
+
+.translationStream {
+  background: #fafbfc;
+}
+
+.reviewItem {
+  min-width: 0;
+  padding: 18px;
+  border-bottom: 1px solid #edf0f2;
+}
+
+.reviewItem:last-child {
+  border-bottom: 0;
+}
+
+.streamHandle {
+  display: block;
+  margin-bottom: 8px;
+  color: #252c35;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.translationHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.streamTranslation {
+  min-height: 84px;
+  color: #4e5968;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.confirmBody {
+  flex: 1 1 auto;
+  min-height: 320px;
+  max-height: min(680px, calc(100vh - 165px));
+  overflow-y: auto;
+  padding: 0 22px;
+  scrollbar-gutter: stable;
+}
+
+.launcherSummary {
+  display: grid;
+  gap: 7px;
+  margin: 18px 0 4px;
+  border: 1px solid #e5e8eb;
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: #fafbfc;
+}
+
+.launcherSummary strong {
+  color: #333d4b;
+  font-size: 13px;
+}
+
+.launcherSummary code {
+  overflow-wrap: anywhere;
+  color: #4e5968;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.launcherSummary span {
+  color: #8b95a1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.confirmItem {
+  padding: 20px 0;
+  border-bottom: 1px solid #edf0f2;
+}
+
+.confirmItem:last-child {
+  border-bottom: 0;
+}
+
+.confirmHandle {
+  display: block;
+  margin-bottom: 9px;
+  color: #252c35;
+  font-size: 15px;
+}
+
+.confirmLabel {
+  margin-bottom: 6px;
+  color: #8b95a1;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.confirmDm {
+  margin: 0;
+  border: 1px solid #edf0f2;
+  border-radius: 10px;
+  padding: 12px 13px;
+  color: #333d4b;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.promptDetails {
+  margin-top: 10px;
+}
+
+.promptDetails summary {
+  color: #4e5968;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.promptPreview {
+  max-height: 260px;
+  margin: 9px 0 0;
+  overflow: auto;
+  border-radius: 10px;
+  padding: 12px 13px;
+  color: #4e5968;
+  background: #f7f8fa;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 15px 22px 18px;
+  border-top: 1px solid #e5e8eb;
+  background: #fff;
+}
+
+.secondaryFooterButton,
+.passButton {
+  min-width: 112px;
+  border-radius: 13px;
+  padding: 10px 20px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.secondaryFooterButton {
+  border: 1px solid #dfe3e8;
+  color: #4e5968;
+  background: #fff;
+}
+
+.passButton {
+  border: 0;
+  color: #fff;
+  background: #3182f6;
+}
+
+.secondaryFooterButton:disabled,
+.passButton:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.sendStatus {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #8a5b00;
+  background: #fff4d6;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.sendText {
+  white-space: pre-wrap;
+  line-height: 1.65;
+}
+
+@media (max-width: 760px) {
+  .backdrop { padding: 12px; }
+  .modal { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+  .reviewBody { min-height: 240px; height: calc(100vh - 220px); }
+  .reviewHeadCell { padding: 10px 12px; }
+  .bulkTextarea,
+  .reviewItem { padding: 14px 12px; }
+  .confirmBody { padding: 0 14px; }
+  .footer { padding: 12px 14px 15px; }
+}
